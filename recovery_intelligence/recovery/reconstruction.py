@@ -17,6 +17,9 @@ EXTENSION_MAP = {
     "png": ".png",
     "gif": ".gif",
     "bmp": ".bmp",
+    "tiff": ".tiff",
+    "tif": ".tiff",
+    "pcx": ".pcx",
     "pdf": ".pdf",
     "docx": ".docx",
     "xlsx": ".xlsx",
@@ -56,6 +59,10 @@ def infer_cluster_file_type(cluster: FragmentCluster, fragments: List[Fragment])
             return "gif"
         elif raw_b.startswith(b"BM"):
             return "bmp"
+        elif raw_b.startswith(b"II\x2a\x00") or raw_b.startswith(b"MM\x00\x2a"):
+            return "tiff"
+        elif len(raw_b) >= 1 and raw_b[0] == 0x0A and len(raw_b) >= 4 and raw_b[1] in (0, 2, 3, 4, 5):
+            return "pcx"
         elif raw_b.startswith(b"%PDF-"):
             return "pdf"
         elif raw_b.startswith(b"PK\x03\x04"):

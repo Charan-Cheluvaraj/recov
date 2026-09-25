@@ -1,4 +1,4 @@
-﻿import math
+import math
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 import numpy as np
@@ -152,8 +152,11 @@ def _text_tfidf_fallback(text: str) -> List[float]:
     counts = Counter(tokens)
     vec = [0.0] * target_dim
     for token, count in counts.items():
-        # Deterministic hashing into 64 dimension buckets
-        bucket = abs(hash(token)) % target_dim
+        # Deterministic FNV-1a32 hash (process-independent, no PYTHONHASHSEED dependence)
+        h = 2166136261
+        for ch in token.encode("utf-8", errors="replace"):
+            h = ((h ^ ch) * 16777619) & 0xFFFFFFFF
+        bucket = h % target_dim
         vec[bucket] += float(count)
 
     return vec

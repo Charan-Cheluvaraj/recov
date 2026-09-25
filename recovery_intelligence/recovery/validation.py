@@ -1,6 +1,8 @@
 import io
 import os
+import struct
 import tempfile
+import wave
 import zipfile
 import sqlite3
 from typing import Tuple
@@ -107,11 +109,6 @@ def validate_docx(data: bytes) -> Tuple[bool, str]:
         return False, f"DOCX ZIP container check failed: {str(e)}"
     
     # Phase 2: verify WordprocessingML with python-docx
-    if not data:
-        return False, "Candidate byte buffer is empty"
-    if not data.startswith(b"PK\x03\x04"):
-        return False, "Missing ZIP magic header for DOCX container"
-    
     try:
         with zipfile.ZipFile(io.BytesIO(data)) as zf:
             bad_crc = zf.testzip()
@@ -308,12 +305,49 @@ def validate_pptx(data: bytes) -> Tuple[bool, str]:
 
 
 def validate_wav(data: bytes) -> Tuple[bool, str]:
-    """Validate WAV audio structure."""
+    """
+    Validate WAV audio structure using the stdlib wave module.
+
+    Checks RIFF/WAVE header, fmt sub-chunk, sample rate, channels,
+    and actual frame data readability.
+    """
     if not data:
         return False, "Candidate byte buffer is empty"
-    if len(data) < 44 or not (data[:4] == b"RIFF" and data[8:12] == b"WAVE"):
-        return False, "Missing RIFF/WAVE header"
-    return True, f"Valid WAV audio header ({len(data)} bytes)"
+    if len(data) < 44:
+        return False, "WAV candidate too small to contain mandatory chunks"
+    if data[:4] != b"RIFF":
+        return False, "Missing RIFF chunk ID"
+    if data[8:12] != b"WAVE":
+        return False, "RIFF container is not WAVE type"
+
+    # Validate declared chunk size matches available bytes
+    declared_chunk_size = struct.unpack_from("<I", data, 4)[0]
+    if declared_chunk_size + 8 > len(data) + 1024:  # allow 1K trailing slack
+        return False, f"WAV declared chunk size ({declared_chunk_size}) inconsistent with data length ({len(data)})"
+
+    try:
+        with wave.open(io.BytesIO(data)) as wf:
+            channels = wf.getnchannels()
+            sample_rate = wf.getframerate()
+            n_frames = wf.getnframes()
+            sample_width = wf.getsampwidth()
+
+        if channels < 1 or channels > 32:
+            return False, f"WAV channels out of range: {channels}"
+        if sample_rate < 100 or sample_rate > 384000:
+            return False, f"WAV sample rate out of range: {sample_rate} Hz"
+        if sample_width < 1 or sample_width > 4:
+            return False, f"WAV sample width out of range: {sample_width} bytes"
+
+        duration_ms = int(n_frames * 1000 / sample_rate) if sample_rate > 0 else 0
+        return True, (
+            f"Valid WAV audio: {channels}ch, {sample_rate} Hz, "
+            f"{sample_width * 8}-bit, {n_frames} frames, ~{duration_ms} ms (wave parser)"
+        )
+    except wave.Error as e:
+        return False, f"WAV structural validation failed (wave parser): {str(e)}"
+    except Exception as e:
+        return False, f"WAV validation failed: {str(e)}"
 
 
 def validate_text(data: bytes) -> Tuple[bool, str]:
@@ -345,6 +379,62 @@ def validate_text(data: bytes) -> Tuple[bool, str]:
     return True, f"Valid text data ({len(decoded)} chars, {encoding_used}, printable ratio {ratio:.2f})"
 
 
+def validate_tiff(data: bytes) -> Tuple[bool, str]:
+    """
+    Validate TIFF image structure using Pillow real parser.
+
+    Checks byte-order mark (II/MM), magic value, IFD offset,
+    and Pillow's ability to open and load the image.
+    """
+    if not data:
+        return False, "Candidate byte buffer is empty"
+    if not (data.startswith(b"II\x2a\x00") or data.startswith(b"MM\x00\x2a")):
+        return False, "Missing TIFF byte-order mark (II 0x2A00 or MM 0x002A)"
+    try:
+        img = Image.open(io.BytesIO(data))
+        if img.format not in ("TIFF",):
+            return False, f"Pillow detected format '{img.format}', expected 'TIFF'"
+        img.verify()
+        img_load = Image.open(io.BytesIO(data))
+        img_load.load()
+        width, height = img_load.size
+        return True, f"Valid TIFF image ({width}x{height}, mode {img_load.mode}, Pillow parser)"
+    except Exception as e:
+        return False, f"Pillow TIFF validation failed: {str(e)}"
+
+
+def validate_pcx(data: bytes) -> Tuple[bool, str]:
+    """
+    Validate PCX image structure using Pillow real parser with header pre-check.
+
+    PCX header byte 0 must be 0x0A (manufacturer), version in {0,2,3,4,5},
+    encoding in {0,1}, bit depth in {1,2,4,8}, and Pillow must load it.
+    """
+    if not data:
+        return False, "Candidate byte buffer is empty"
+    if len(data) < 128:
+        return False, f"PCX candidate too small: {len(data)} bytes (minimum 128)"
+    if data[0] != 0x0A:
+        return False, "Missing PCX manufacturer byte (0x0A)"
+    if data[1] not in (0, 2, 3, 4, 5):
+        return False, f"PCX version byte out of range: {data[1]}"
+    if data[2] not in (0, 1):
+        return False, f"PCX encoding byte invalid: {data[2]}"
+    if data[3] not in (1, 2, 4, 8):
+        return False, f"PCX bits-per-plane invalid: {data[3]}"
+    try:
+        img = Image.open(io.BytesIO(data))
+        if img.format not in ("PCX",):
+            return False, f"Pillow detected format '{img.format}', expected 'PCX'"
+        img.verify()
+        img_load = Image.open(io.BytesIO(data))
+        img_load.load()
+        width, height = img_load.size
+        return True, f"Valid PCX image ({width}x{height}, mode {img_load.mode}, Pillow parser)"
+    except Exception as e:
+        return False, f"Pillow PCX validation failed: {str(e)}"
+
+
 def validate_reconstruction(file_type: str, data: bytes) -> Tuple[bool, str]:
     """
     Dispatch structural validation based on file type.
@@ -363,6 +453,10 @@ def validate_reconstruction(file_type: str, data: bytes) -> Tuple[bool, str]:
         return validate_gif(data)
     elif ft == "bmp":
         return validate_bmp(data)
+    elif ft in ("tiff", "tif"):
+        return validate_tiff(data)
+    elif ft == "pcx":
+        return validate_pcx(data)
     elif ft == "pdf":
         return validate_pdf(data)
     elif ft == "docx":

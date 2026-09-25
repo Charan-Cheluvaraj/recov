@@ -25,6 +25,12 @@ from recovery.validation import (
     validate_zip,
     validate_sqlite,
     validate_text,
+    validate_tiff,
+    validate_pcx,
+    validate_wav,
+    validate_png,
+    validate_gif,
+    validate_bmp,
 )
 from recovery.recoverability import (
     calculate_recoverability_metrics,
@@ -259,3 +265,220 @@ def test_priority_and_sensitivity_never_override_validation():
     )
     # The validation gate MUST remain false despite high priority score and sensitivity
     assert rf.is_successfully_recovered is False
+
+
+# ============================================================
+# 8. TIFF Validation: Real Pillow Round-Trip
+# ============================================================
+def test_intact_tiff_validates_pillow():
+    img = Image.new("RGB", (16, 16), color=(80, 160, 240))
+    b = io.BytesIO()
+    img.save(b, format="TIFF")
+    tiff_bytes = b.getvalue()
+
+    valid, msg = validate_tiff(tiff_bytes)
+    assert valid is True, f"Expected TIFF to validate; msg={msg}"
+    assert "TIFF" in msg or "tiff" in msg.lower()
+
+
+def test_corrupt_tiff_fails_validation():
+    valid, msg = validate_tiff(b"II\x2a\x00" + b"\xff" * 50)
+    assert valid is False, "Truncated/corrupt TIFF must fail validation"
+
+
+def test_wrong_magic_tiff_fails():
+    valid, msg = validate_tiff(b"\xff\xd8\xff" + b"\x00" * 50)
+    assert valid is False
+    assert "byte-order mark" in msg.lower() or "Missing TIFF" in msg
+
+
+# ============================================================
+# 9. PCX Validation: Pillow + Header Plausibility
+# ============================================================
+def test_intact_pcx_validates_pillow():
+    img = Image.new("P", (16, 16))
+    b = io.BytesIO()
+    img.save(b, format="PCX")
+    pcx_bytes = b.getvalue()
+
+    valid, msg = validate_pcx(pcx_bytes)
+    assert valid is True, f"Expected PCX to validate; msg={msg}"
+
+
+def test_random_byte_not_pcx():
+    """A random byte 0x0A that isn't a real PCX header must be rejected."""
+    # Manufacturer byte matches but subsequent bytes don't match PCX spec
+    fake_pcx = b"\x0a\xff\xff\xff" + b"\x00" * 200  # version=255 → invalid
+    valid, msg = validate_pcx(fake_pcx)
+    assert valid is False, "Random 0x0A should not validate as PCX"
+
+
+# ============================================================
+# 10. WAV Validation: wave Module Round-Trip
+# ============================================================
+def test_intact_wav_validates_wave_module():
+    import wave
+    buf = io.BytesIO()
+    with wave.open(buf, "w") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(16000)
+        wf.writeframes(b"\x00\x00" * 1600)
+    wav_bytes = buf.getvalue()
+
+    valid, msg = validate_wav(wav_bytes)
+    assert valid is True, f"Expected WAV to validate; msg={msg}"
+    assert "16000 Hz" in msg or "wave parser" in msg
+
+
+def test_riff_non_wave_fails_validation():
+    """RIFF container that is not WAVE must fail WAV validation."""
+    # RIFF + fake chunk type 'AVI '
+    fake_riff = b"RIFF" + b"\x00\x00\x00\x10" + b"AVI " + b"\x00" * 40
+    valid, msg = validate_wav(fake_riff)
+    assert valid is False
+    assert "WAVE" in msg or "RIFF" in msg
+
+
+def test_truncated_wav_fails_validation():
+    valid, msg = validate_wav(b"RIFF" + b"\x00" * 20)
+    assert valid is False
+
+
+# ============================================================
+# 11. PNG Chunk Parsing
+# ============================================================
+def test_intact_png_validates_pillow():
+    img = Image.new("RGB", (16, 16), color=(200, 100, 50))
+    b = io.BytesIO()
+    img.save(b, format="PNG")
+    png_bytes = b.getvalue()
+
+    valid, msg = validate_png(png_bytes)
+    assert valid is True, f"Expected PNG to validate; msg={msg}"
+    assert "PNG" in msg or "Pillow" in msg
+
+
+def test_truncated_png_fails_validation():
+    png_hdr = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
+    valid, msg = validate_png(png_hdr)
+    assert valid is False
+
+
+# ============================================================
+# 12. BMP: Declared Size Must Be Plausible
+# ============================================================
+def test_intact_bmp_validates_pillow():
+    img = Image.new("RGB", (16, 16), color="cyan")
+    b = io.BytesIO()
+    img.save(b, format="BMP")
+    bmp_bytes = b.getvalue()
+
+    valid, msg = validate_bmp(bmp_bytes)
+    assert valid is True, f"Expected BMP to validate; msg={msg}"
+
+
+def test_bm_with_impossible_size_does_not_carve(tmp_path: Path):
+    """
+    Bytes starting with 'BM' but with an absurd declared file size in
+    bytes 2-5 must NOT produce a carving candidate.
+    """
+    # 'BM' header, declared size = 500 MB (way over max_scan_size=20MB)
+    fake_bmp = b"BM" + (500 * 1024 * 1024).to_bytes(4, "little") + b"\x00" * 100
+    ev_path = tmp_path / "fake_bmp.dd"
+    ev_path.write_bytes(fake_bmp)
+
+    fragments = carve_fragments(ev_path)
+    bmp_frags = [f for f in fragments if f.type_hint == "bmp"]
+    assert len(bmp_frags) == 0, "Implausible BMP declared size must be rejected"
+
+
+# ============================================================
+# 13. Carving: TIFF IFD Offset Validation
+# ============================================================
+def test_tiff_with_invalid_ifd_offset_does_not_carve(tmp_path: Path):
+    """
+    A TIFF magic header with an IFD offset pointing past EOF must
+    NOT produce a carving candidate.
+    """
+    # II + 42 (little-endian) + IFD offset = 9999999 (way past file end)
+    fake_tiff = b"II\x2a\x00" + (9999999).to_bytes(4, "little") + b"\x00" * 20
+    ev_path = tmp_path / "fake_tiff.dd"
+    ev_path.write_bytes(fake_tiff)
+
+    fragments = carve_fragments(ev_path)
+    tiff_frags = [f for f in fragments if f.type_hint == "tiff"]
+    assert len(tiff_frags) == 0, "TIFF with invalid IFD offset must not produce a fragment"
+
+
+# ============================================================
+# 14. Carving: PCX False-Positive Rejection
+# ============================================================
+def test_pcx_random_0x0a_does_not_carve(tmp_path: Path):
+    """
+    Random data starting with 0x0A but with invalid PCX version/encoding
+    must NOT produce a PCX carving candidate.
+    """
+    # 0x0A byte followed by junk PCX fields (version=99, encoding=7)
+    fake_pcx = b"\x0a\x63\x07\x10" + b"\xff" * 200
+    ev_path = tmp_path / "fake_pcx.dd"
+    ev_path.write_bytes(fake_pcx)
+
+    fragments = carve_fragments(ev_path)
+    pcx_frags = [f for f in fragments if f.type_hint == "pcx"]
+    assert len(pcx_frags) == 0, "Invalid PCX header bytes must be rejected by carving"
+
+
+# ============================================================
+# 15. Fingerprinting: FNV-1a Determinism
+# ============================================================
+def test_text_fingerprint_is_deterministic_across_calls():
+    """
+    Fingerprints must be identical when generated twice from the same input.
+    Python's hash() is randomised per-process; FNV-1a32 is not.
+    """
+    import tempfile, os
+    from recovery.fingerprinting import fit_and_fingerprint, read_fragment_bytes
+
+    text = "Forensic evidence payload for fingerprint determinism test"
+    text_bytes = text.encode("utf-8")
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".txt") as f:
+        f.write(text_bytes)
+        tf = f.name
+
+    try:
+        frag = Fragment(
+            id="F_det_test", offset=0, length=len(text_bytes),
+            source=tf, type_hint="text",
+            metadata={"characterization": "text"}
+        )
+        run1 = fit_and_fingerprint([frag])
+        run2 = fit_and_fingerprint([frag])
+        assert run1[0].vector == run2[0].vector, (
+            "Text fingerprint vector must be identical across two calls "
+            f"(FNV-1a)\n  run1={run1[0].vector[:8]}\n  run2={run2[0].vector[:8]}"
+        )
+    finally:
+        os.unlink(tf)
+
+
+# ============================================================
+# 16. validate_reconstruction Dispatch for New Formats
+# ============================================================
+def test_validate_reconstruction_dispatch_tiff():
+    img = Image.new("RGB", (8, 8), color=(10, 20, 30))
+    b = io.BytesIO()
+    img.save(b, format="TIFF")
+    valid, msg = validate_reconstruction("tiff", b.getvalue())
+    assert valid is True
+
+
+def test_validate_reconstruction_dispatch_wav():
+    import wave
+    buf = io.BytesIO()
+    with wave.open(buf, "w") as wf:
+        wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(8000)
+        wf.writeframes(b"\x00\x00" * 800)
+    valid, msg = validate_reconstruction("wav", buf.getvalue())
+    assert valid is True
