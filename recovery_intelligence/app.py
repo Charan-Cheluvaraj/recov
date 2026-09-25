@@ -20,7 +20,7 @@ from visualization import (
     render_narrative,
 )
 from storage import load_cached_results
-from pipeline import run_pipeline, run_stage_1
+from pipeline import run_pipeline, run_stage_1, run_stage_2
 
 st.set_page_config(
     page_title="AI-Assisted Intelligent Data Recovery",
@@ -29,7 +29,7 @@ st.set_page_config(
 )
 
 st.title("AI-Assisted Intelligent Data Recovery & Digital Evidence Reconstruction")
-st.caption("CALMSTACKS 24H HACKATHON Project | Stage 1: Evidence Ingestion & Magic-Byte Carving")
+st.caption("CALMSTACKS 24H HACKATHON Project | Stage 1 + Stage 2: Evidence Ingestion, Magic-Byte Carving & Fragment Characterization")
 
 # Ensure required directories exist
 settings.EVIDENCE_DIR.mkdir(parents=True, exist_ok=True)
@@ -40,6 +40,8 @@ if "evidence_record" not in st.session_state:
     st.session_state.evidence_record = None
 if "carved_fragments" not in st.session_state:
     st.session_state.carved_fragments = []
+if "characterized_fragments" not in st.session_state:
+    st.session_state.characterized_fragments = []
 if "current_results" not in st.session_state:
     st.session_state.current_results = None
 
@@ -49,7 +51,7 @@ st.sidebar.markdown("---")
 
 view_mode = st.sidebar.radio(
     "Select Dashboard View",
-    ["Stage 1: Carving", "Overview", "Ranked Results", "File Detail", "Relationship Graph", "Narrative Report"],
+    ["Stage 1: Carving", "Stage 2: Characterization", "Overview", "Ranked Results", "File Detail", "Relationship Graph", "Narrative Report"],
 )
 
 st.sidebar.markdown("---")
@@ -94,7 +96,9 @@ st.sidebar.markdown("---")
 # Execution Buttons
 col_btn1, col_btn2 = st.sidebar.columns(2)
 run_stage1_clicked = col_btn1.button("Run Stage 1 Carve", type="primary")
-run_full_clicked = col_btn2.button("Run Full Pipeline")
+run_stage2_clicked = col_btn2.button("Run Stage 2 Characterize", type="secondary")
+st.sidebar.markdown("")
+run_full_clicked = st.sidebar.button("Run Full Pipeline (Deferred)")
 
 # Target Path Resolution
 target_path: Optional[str] = None
@@ -118,6 +122,20 @@ if run_stage1_clicked:
                 st.sidebar.success(f"Carved {len(fragments)} fragments!")
         except Exception as e:
             st.sidebar.error(f"Stage 1 Ingestion Error: {e}")
+
+if run_stage2_clicked:
+    if not target_path:
+        st.sidebar.warning("Please select or upload an evidence image first.")
+    else:
+        try:
+            with st.spinner("Running Stage 2: entropy + characterization..."):
+                evidence, characterized = run_stage_2(target_path)
+                st.session_state.evidence_record = evidence
+                st.session_state.carved_fragments = characterized
+                st.session_state.characterized_fragments = characterized
+                st.sidebar.success(f"Characterized {len(characterized)} fragments!")
+        except Exception as e:
+            st.sidebar.error(f"Stage 2 Characterization Error: {e}")
 
 if run_full_clicked:
     if not target_path:
@@ -187,6 +205,80 @@ if view_mode == "Stage 1: Carving":
             
             with st.expander("Inspect Raw Fragment Metadata (JSON)"):
                 st.json([f.model_dump() for f in fragments])
+
+elif view_mode == "Stage 2: Characterization":
+    st.header("Stage 2: Fragment Characterization (Entropy Analysis)")
+    fragments = st.session_state.characterized_fragments
+
+    if not fragments:
+        st.info(
+            "No characterized fragments yet. Select an evidence file and click "
+            "**Run Stage 2 Characterize** in the sidebar."
+        )
+    else:
+        evidence = st.session_state.evidence_record
+        if evidence:
+            st.caption(
+                f"Evidence: `{evidence.source_path}` | SHA-256: `{evidence.sha256[:16]}…` | "
+                f"{len(fragments)} fragments characterized"
+            )
+
+        # Summary metrics
+        text_c = sum(1 for f in fragments if f.metadata.get("characterization") == "text")
+        binary_c = sum(1 for f in fragments if f.metadata.get("characterization") == "binary")
+        mixed_c = sum(1 for f in fragments if f.metadata.get("characterization") == "mixed")
+        avg_entropy = sum(f.entropy for f in fragments) / len(fragments) if fragments else 0.0
+
+        m1, m2, m3, m4, m5 = st.columns(5)
+        m1.metric("Total Fragments", len(fragments))
+        m2.metric("Text", text_c)
+        m3.metric("Binary", binary_c)
+        m4.metric("Mixed", mixed_c)
+        m5.metric("Avg Entropy", f"{avg_entropy:.3f}")
+
+        st.markdown("---")
+        st.subheader("Characterized Fragments Table")
+
+        table_data = [
+            {
+                "Fragment ID": f.id,
+                "Offset": f"{f.offset} (0x{f.offset:08X})",
+                "Length": f"{f.length} B",
+                "Type Hint": f.type_hint.upper(),
+                "Entropy": f"{f.entropy:.4f}",
+                "Characterization": f.metadata.get("characterization", "-").upper(),
+                "Printable Ratio": f"{f.metadata.get('printable_ratio', 0.0):.3f}",
+                "Header": "✓" if f.header_flag else "✗",
+                "Footer": "✓" if f.footer_flag else "—",
+            }
+            for f in fragments
+        ]
+        st.dataframe(table_data, use_container_width=True)
+
+        st.markdown("---")
+        st.subheader("Entropy Window Chart (Select Fragment)")
+
+        frag_ids = [f.id for f in fragments]
+        selected_id = st.selectbox("Select fragment to inspect:", frag_ids)
+        selected_frag = next((f for f in fragments if f.id == selected_id), None)
+
+        if selected_frag:
+            windows = selected_frag.metadata.get("entropy_windows", [])
+            if windows:
+                chart_data = {
+                    "Byte Offset": [w["start"] for w in windows],
+                    "Window Entropy": [w["entropy"] for w in windows],
+                }
+                import pandas as pd
+                df = pd.DataFrame(chart_data).set_index("Byte Offset")
+                st.line_chart(df, height=250)
+                st.caption(
+                    f"Whole-fragment entropy: **{selected_frag.entropy:.4f}** | "
+                    f"Characterization: **{selected_frag.metadata.get('characterization', '-').upper()}** | "
+                    f"Printable ratio: **{selected_frag.metadata.get('printable_ratio', 0.0):.3f}**"
+                )
+            else:
+                st.info("No sliding-window data available for this fragment.")
 
 elif view_mode == "Overview":
     render_overview(st.session_state.current_results)
