@@ -46,9 +46,20 @@ class Settings(BaseModel):
     COMPLETENESS_WEIGHT: float = 0.25
     STRUCTURAL_VALIDITY_WEIGHT: float = 0.35
     CORRUPTION_WEIGHT: float = 0.15
+
+    # Stage 8 Investigative Priority Ranking Weights
+    PRIORITY_INTEGRITY_WEIGHT: float = 0.25
+    PRIORITY_RECOVERABILITY_WEIGHT: float = 0.20
+    PRIORITY_STRUCTURAL_WEIGHT: float = 0.15
+    PRIORITY_SENSITIVITY_WEIGHT: float = 0.30
+    PRIORITY_SIZE_WEIGHT: float = 0.10
+    PRIORITY_AMBIGUITY_PENALTY: float = 0.15
+    PRIORITY_CORRUPTION_PENALTY: float = 0.10
+    PRIORITY_SIZE_NORMALIZATION_BYTES: float = 65536.0
     
     # AI Models
     EMBEDDING_MODEL_NAME: str = "sentence-transformers/all-MiniLM-L6-v2"
+
     LLM_PROVIDER: str = "gemini"  # "gemini" or "anthropic"
     
     # Thresholds

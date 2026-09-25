@@ -6,6 +6,7 @@ from .ranked_results import RankedResults
 from .evidence import Evidence
 from .narrative import Narrative
 from .recoverability import RecoveryStatus, RecoverabilityAssessment
+from .sensitivity import SensitivityLevel, SensitivityMatch, SensitivityAssessment
 
 __all__ = [
     "Fragment",
@@ -17,5 +18,9 @@ __all__ = [
     "Narrative",
     "RecoveryStatus",
     "RecoverabilityAssessment",
+    "SensitivityLevel",
+    "SensitivityMatch",
+    "SensitivityAssessment",
 ]
+
 

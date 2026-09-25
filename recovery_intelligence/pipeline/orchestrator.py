@@ -1,3 +1,4 @@
+import os
 from typing import Optional, Tuple, List, Dict, Any
 from models.ranked_results import RankedResults
 from models.evidence import Evidence
@@ -12,11 +13,18 @@ from recovery.fingerprinting import fit_and_fingerprint
 from recovery.relationship_graph import build_relationship_graph
 from recovery.clustering import cluster_fragments
 from recovery.reconstruction import reconstruct_structured_file
-from recovery.text_reconstruction import reconstruct_small_text_cluster, reconstruct_large_text_cluster
+from recovery.text_reconstruction import (
+    reconstruct_small_text_cluster,
+    reconstruct_large_text_cluster,
+    read_fragment_bytes,
+)
 from intelligence.scoring import score_reconstructed_file
+from intelligence.sensitivity import analyze_sensitivity
+from intelligence.priority import calculate_priority_score, rank_reconstructed_candidates
 from recovery.recoverability import assess_recoverability
 from .pipeline_context import PipelineContext
 from .pipeline_status import PipelineStatus, PipelineStage
+
 
 
 def run_stage_1(
@@ -255,11 +263,94 @@ def run_stage_7(
 
     return evidence, fragments, features, graph, clusters, orphans, assessed_files
 
+def run_stage_8(
+    evidence_path: str, status_callback: Optional[callable] = None
+) -> Tuple[Evidence, List[Fragment], List[FeatureVector], Dict[str, Any], List[FragmentCluster], List[str], List[ReconstructedFile]]:
+    """
+    Execute Stage 8: Stages 1-7 + Sensitivity Classification & Investigative Priority Ranking.
+    
+    Inspects recovered candidate artifacts for potential sensitive identifiers (Aadhaar, PAN,
+    email, phone, cards, credentials, sensitive keywords), calculates transparent investigative
+    priority scores combining integrity, recoverability, validity, sensitivity, and size minus
+    penalties, and deterministically ranks candidates for investigator triage.
+    
+    Returns:
+        (evidence, fragments, features, relationship_graph, clusters, orphans, ranked_files)
+    """
+    evidence, fragments, features, graph, clusters, orphans, assessed_files = run_stage_7(
+        evidence_path, status_callback=status_callback
+    )
+
+    status = PipelineStatus()
+    if status_callback:
+        status.update(PipelineStage.INTELLIGENCE_TRIAGE, 0.4, f"Classifying sensitivity for {len(assessed_files)} candidates")
+        status_callback(status)
+
+    frag_map = {f.id: f for f in fragments}
+    classified_files: List[ReconstructedFile] = []
+
+    for cand in assessed_files:
+        cand_id = cand.candidate_id or cand.id
+
+        # Read actual candidate content for inspection
+        data_to_scan = b""
+        if cand.output_path and os.path.exists(cand.output_path):
+            try:
+                with open(cand.output_path, "rb") as cf:
+                    data_to_scan = cf.read()
+            except Exception:
+                data_to_scan = b""
+
+        # Fallback to assembled fragment bytes if output file not accessible
+        if not data_to_scan and cand.fragment_ids:
+            chunks = []
+            for fid in cand.fragment_ids:
+                if fid in frag_map:
+                    chunks.append(read_fragment_bytes(frag_map[fid]))
+            data_to_scan = b"".join(chunks)
+
+        # Run deterministic sensitivity analysis
+        assessment = analyze_sensitivity(data_to_scan, candidate_id=cand_id)
+
+        cand.sensitivity_level = assessment.sensitivity_level.value
+        cand.detected_categories = assessment.detected_categories
+        cand.sensitivity_matches = [m.model_dump() for m in assessment.matches]
+        cand.sensitivity_hits = [m.model_dump() for m in assessment.matches]
+
+        # Calculate investigative priority
+        p_score, p_reason = calculate_priority_score(
+            composite_integrity=cand.composite_integrity_score,
+            observed_recovery_ratio=cand.observed_recovery_ratio,
+            structural_validity=cand.structural_validity,
+            recovered_bytes=cand.recovered_bytes,
+            sensitivity_level=assessment.sensitivity_level,
+            category_count=len(assessment.detected_categories),
+            ambiguous=cand.ambiguous,
+            corruption_estimate=cand.corruption_estimate,
+        )
+
+        cand.priority_score = p_score
+        cand.priority_reason = p_reason
+        classified_files.append(cand)
+
+    # Sort deterministically by priority score descending with documented tie-breakers
+    ranked_files = rank_reconstructed_candidates(classified_files)
+
+    if status_callback:
+        status.update(
+            PipelineStage.INTELLIGENCE_TRIAGE,
+            1.0,
+            f"Successfully classified sensitivity and ranked {len(ranked_files)} candidates"
+        )
+        status_callback(status)
+
+    return evidence, fragments, features, graph, clusters, orphans, ranked_files
+
 def run_pipeline(evidence_path: str, status_callback: Optional[callable] = None) -> RankedResults:
     """
     Main 14-stage Pipeline Orchestrator.
     
-    Stages 8-14 are intentionally deferred; use run_stage_1 .. run_stage_7 for completed stages.
+    Stages 9-14 are intentionally deferred; use run_stage_1 .. run_stage_8 for completed stages.
     """
     context = PipelineContext(evidence_path=evidence_path)
     status = PipelineStatus()
@@ -269,6 +360,7 @@ def run_pipeline(evidence_path: str, status_callback: Optional[callable] = None)
         status_callback(status)
 
     raise NotImplementedError(
-        "Full 14-stage pipeline is deferred in Stage 7. "
-        "Use run_stage_7(evidence_path) for Stage 7 recoverability assessment & reconstruction."
-    )
+        "Full 14-stage pipeline is deferred in Stage 8. "
+        "Use run_stage_8(evidence_path) for Stage 8 sensitivity classification & investigative priority ranking."
+    )
+

@@ -6,7 +6,7 @@ from .scoring import (
     calculate_composite_integrity,
     score_reconstructed_file,
 )
-from .priority import calculate_priority_score
+from .priority import calculate_priority_score, rank_reconstructed_candidates, calculate_sensitivity_component
 from .pii_detection import detect_pii
 from .keyword_detection import detect_keywords
 from .sensitivity import analyze_sensitivity
@@ -20,6 +20,8 @@ __all__ = [
     "calculate_composite_integrity",
     "score_reconstructed_file",
     "calculate_priority_score",
+    "rank_reconstructed_candidates",
+    "calculate_sensitivity_component",
     "detect_pii",
     "detect_keywords",
     "analyze_sensitivity",

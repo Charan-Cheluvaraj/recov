@@ -23,7 +23,7 @@ from visualization import (
     render_narrative,
 )
 from storage import load_cached_results
-from pipeline import run_pipeline, run_stage_1, run_stage_2, run_stage_3, run_stage_4, run_stage_5, run_stage_6, run_stage_7
+from pipeline import run_pipeline, run_stage_1, run_stage_2, run_stage_3, run_stage_4, run_stage_5, run_stage_6, run_stage_7, run_stage_8
 
 st.set_page_config(
     page_title="AI-Assisted Intelligent Data Recovery",
@@ -32,7 +32,7 @@ st.set_page_config(
 )
 
 st.title("AI-Assisted Intelligent Data Recovery & Digital Evidence Reconstruction")
-st.caption("CALMSTACKS 24H HACKATHON Project | Stages 1–7: Ingestion, Carving, Characterization, Fingerprinting, Clustering, Reconstruction, Scoring & Real Recoverability Assessment")
+st.caption("CALMSTACKS 24H HACKATHON Project | Stages 1–8: Ingestion, Carving, Characterization, Fingerprinting, Clustering, Reconstruction, Scoring, Recoverability & Sensitivity Priority Ranking")
 
 
 # Ensure required directories exist
@@ -73,6 +73,7 @@ view_mode = st.sidebar.radio(
         "Stage 5: Reconstruction",
         "Stage 6: Integrity Scoring",
         "Stage 7: Recoverability",
+        "Stage 8: Classification & Priority",
         "Overview",
         "Ranked Results",
         "File Detail",
@@ -134,7 +135,8 @@ run_stage5_clicked = col_btn5.button("Run Stage 5 Reconstruct")
 run_stage6_clicked = col_btn6.button("Run Stage 6 Score")
 
 col_btn7, col_btn8 = st.sidebar.columns(2)
-run_stage7_clicked = col_btn7.button("Run Stage 7 Recover", type="primary")
+run_stage7_clicked = col_btn7.button("Run Stage 7 Recover")
+run_stage8_clicked = col_btn8.button("Run Stage 8 Classify & Rank", type="primary")
 
 st.sidebar.markdown("")
 run_full_clicked = st.sidebar.button("Run Full Pipeline (Deferred)")
@@ -266,6 +268,25 @@ if run_stage7_clicked:
                 st.sidebar.success(f"Assessed recoverability for {len(assessed_files)} candidates & generated artifacts!")
         except Exception as e:
             st.sidebar.error(f"Stage 7 Recoverability Error: {e}")
+
+if run_stage8_clicked:
+    if not target_path:
+        st.sidebar.warning("Please select or upload an evidence image first.")
+    else:
+        try:
+            with st.spinner("Running Stage 8: sensitivity classification & investigative priority ranking..."):
+                evidence, characterized, features, graph, clusters, orphans, ranked_files = run_stage_8(target_path)
+                st.session_state.evidence_record = evidence
+                st.session_state.carved_fragments = characterized
+                st.session_state.characterized_fragments = characterized
+                st.session_state.feature_vectors = features
+                st.session_state.relationship_graph = graph
+                st.session_state.clusters = clusters
+                st.session_state.orphans = orphans
+                st.session_state.reconstructed_files = ranked_files
+                st.sidebar.success(f"Classified & ranked {len(ranked_files)} candidates by investigative priority!")
+        except Exception as e:
+            st.sidebar.error(f"Stage 8 Classification & Priority Error: {e}")
 
 
 if run_full_clicked:
@@ -853,6 +874,141 @@ elif view_mode == "Stage 7: Recoverability":
                         for g in gaps
                     ]
                     st.dataframe(gap_rows, use_container_width=True)
+
+elif view_mode == "Stage 8: Classification & Priority":
+    st.header("Stage 8: Sensitivity Classification & Investigative Priority Ranking")
+    st.caption("Deterministic pattern detection of sensitive identifiers and factual investigative prioritization grounded in observable recovered content and pipeline signals.")
+
+    reconstructed_list: List[ReconstructedFile] = st.session_state.reconstructed_files
+
+    if not reconstructed_list:
+        st.info("No candidates classified yet. Select or upload an evidence image and click 'Run Stage 8 Classify & Rank' from the sidebar.")
+    else:
+        # 1. Summary Metrics
+        st.subheader("Classification & Priority Overview")
+        
+        c_tot = len(reconstructed_list)
+        c_sensitive = sum(1 for r in reconstructed_list if (r.sensitivity_level or "NONE") != "NONE")
+        c_high = sum(1 for r in reconstructed_list if (r.sensitivity_level or "NONE") == "HIGH")
+        c_med = sum(1 for r in reconstructed_list if (r.sensitivity_level or "NONE") == "MEDIUM")
+        c_low_none = sum(1 for r in reconstructed_list if (r.sensitivity_level or "NONE") in ("LOW", "NONE"))
+        c_struct_valid = sum(1 for r in reconstructed_list if (r.structural_validity or 0.0) >= 1.0)
+        c_ranked = len([r for r in reconstructed_list if r.priority_score is not None])
+
+        m1, m2, m3, m4, m5, m6, m7 = st.columns(7)
+        m1.metric("Total Candidates", c_tot)
+        m2.metric("Sensitive Candidates", c_sensitive)
+        m3.metric("High Sensitivity", c_high)
+        m4.metric("Medium Sensitivity", c_med)
+        m5.metric("Low/None", c_low_none)
+        m6.metric("Candidates with Structural Validation", c_struct_valid)
+        m7.metric("Ranked Candidates", c_ranked)
+
+        st.markdown("---")
+
+        # 2. Informational Notice
+        st.info(
+            "ℹ️ **Deterministic Sensitivity & Priority Policy**: "
+            "Detections are factual matches against defined technical patterns (regex/keywords) and indicate potential "
+            "sensitive identifiers. They do not assert live identity, individual ownership, or courtroom admissibility. "
+            "Priority ordering is an objective investigative filter based strictly on observable integrity, recoverability, and sensitivity."
+        )
+
+        # 3. Ranked Table
+        st.subheader("Investigative Priority Ranked Candidates")
+
+        ranked_table = [
+            {
+                "Rank": idx + 1,
+                "Candidate": r.candidate_id or r.id,
+                "File Type": r.file_type.upper(),
+                "Recovery Status": r.recovery_status or r.status,
+                "Observed Recovery Ratio": f"{r.observed_recovery_ratio * 100:.1f}%",
+                "Integrity": f"{r.composite_integrity_score * 100:.1f}%",
+                "Sensitivity": r.sensitivity_level or "NONE",
+                "Detected Categories": ", ".join(r.detected_categories) if r.detected_categories else "None",
+                "Priority": f"{r.priority_score:.4f}" if r.priority_score is not None else "0.0000",
+                "Output": Path(r.output_path).name if r.output_path else "—",
+            }
+            for idx, r in enumerate(reconstructed_list)
+        ]
+        st.dataframe(ranked_table, use_container_width=True)
+
+        st.markdown("---")
+
+        # 4. Detailed Candidate Inspector
+        st.subheader("Candidate Priority & Sensitivity Inspector")
+
+        cand_options = [r.candidate_id or r.id for r in reconstructed_list]
+        selected_cand_id = st.selectbox("Select Candidate to Inspect", options=cand_options)
+        selected_recon = next((r for r in reconstructed_list if (r.candidate_id or r.id) == selected_cand_id), None)
+
+        if selected_recon:
+            col_left, col_right = st.columns([3, 2])
+
+            with col_left:
+                st.markdown("##### Factual Priority Reason")
+                st.success(selected_recon.priority_reason if selected_recon.priority_reason else "No priority reason computed.")
+
+                st.markdown("##### Sensitivity Classification Findings")
+                s1, s2, s3 = st.columns(3)
+                s1.metric("Sensitivity Level", selected_recon.sensitivity_level or "NONE")
+                s2.metric("Categories Found", len(selected_recon.detected_categories) if selected_recon.detected_categories else 0)
+                s3.metric("Pattern Matches", len(selected_recon.sensitivity_matches) if selected_recon.sensitivity_matches else 0)
+
+                if selected_recon.detected_categories:
+                    st.markdown(f"**Detected Categories:** `{', '.join(selected_recon.detected_categories)}`")
+                else:
+                    st.markdown("**Detected Categories:** `None`")
+
+                if selected_recon.sensitivity_matches:
+                    st.markdown("###### Matched Pattern Snippets (Masked)")
+                    match_rows = [
+                        {
+                            "Category": m.get("category", ""),
+                            "Masked Text": m.get("masked_text", ""),
+                            "Byte Offset": m.get("offset", 0),
+                            "Pattern Name": m.get("pattern_name", ""),
+                            "Context": m.get("context", ""),
+                        }
+                        for m in selected_recon.sensitivity_matches
+                    ]
+                    st.dataframe(match_rows, use_container_width=True)
+
+                st.markdown("##### Recovery Metrics")
+                r1, r2, r3, r4 = st.columns(4)
+                r1.metric("Recovered Bytes", f"{selected_recon.recovered_bytes:,} B")
+                r2.metric("Missing/Unknown", f"{selected_recon.missing_or_unknown_bytes:,} B")
+                r3.metric("Observed Span", f"{selected_recon.observed_candidate_span:,} B")
+                r4.metric("Recovery Ratio", f"{selected_recon.observed_recovery_ratio * 100:.1f}%")
+
+            with col_right:
+                st.markdown("##### Recovered Artifact File")
+                cand_path = Path(selected_recon.output_path) if selected_recon.output_path else None
+                file_exists = cand_path.exists() if cand_path else False
+
+                st.markdown(f"**Artifact Path:** `{cand_path}`")
+                st.markdown(f"**Artifact Exists on Disk:** `{file_exists}`")
+                st.markdown(f"**SHA-256 Digest:** `{selected_recon.output_sha256 if selected_recon.output_sha256 else 'N/A'}`")
+                st.markdown(f"**Investigative Priority Score:** `{selected_recon.priority_score:.4f}`")
+
+                if file_exists:
+                    try:
+                        with open(cand_path, "rb") as af:
+                            artifact_data = af.read()
+                        st.download_button(
+                            label=f"⬇️ Download {cand_path.name} ({len(artifact_data):,} B)",
+                            data=artifact_data,
+                            file_name=cand_path.name,
+                            mime="application/octet-stream",
+                            type="secondary",
+                        )
+                    except Exception as e:
+                        st.error(f"Error reading artifact: {e}")
+
+            st.markdown("---")
+            st.markdown("##### Preserved Stage 6 Integrity Signals")
+            render_integrity_signals(selected_recon)
 
 elif view_mode == "Overview":
     render_overview(st.session_state.current_results)

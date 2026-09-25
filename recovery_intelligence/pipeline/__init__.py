@@ -7,6 +7,7 @@ from .orchestrator import (
     run_stage_5,
     run_stage_6,
     run_stage_7,
+    run_stage_8,
 )
 from .pipeline_context import PipelineContext
 from .pipeline_status import PipelineStatus, PipelineStage
@@ -20,7 +21,9 @@ __all__ = [
     "run_stage_5",
     "run_stage_6",
     "run_stage_7",
+    "run_stage_8",
     "PipelineContext",
     "PipelineStatus",
     "PipelineStage",
-]
+]
+

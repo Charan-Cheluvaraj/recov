@@ -38,10 +38,17 @@ class ReconstructedFile(BaseModel):
     recovery_status: str = "UNRECOVERABLE"
     recovery_reason: str = ""
 
+    # Stage 8 Sensitivity & Investigative Priority Fields
+    sensitivity_level: str = "NONE"
+    detected_categories: List[str] = Field(default_factory=list)
+    sensitivity_matches: List[Dict[str, Any]] = Field(default_factory=list)
+    priority_reason: str = ""
+
     def __init__(self, **data: Any):
         super().__init__(**data)
         if not self.candidate_id and self.id:
             self.candidate_id = self.id
         if not self.fragment_count and self.fragment_ids:
             self.fragment_count = len(self.fragment_ids)
+
 
