@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.venv
+
+# Environment & Credentials
+.env
+
+# Evidence & Large Binary Files
+evidence/*.dd
+evidence/*.img
+recovered/*
+!recovered/.gitkeep
+cache/*
+!cache/.gitkeep
+results/*
+!results/.gitkeep
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+
+# Streamlit
+.streamlit/
