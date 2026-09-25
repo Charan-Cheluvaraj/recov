@@ -2,9 +2,11 @@
 from models.ranked_results import RankedResults
 from models.evidence import Evidence
 from models.fragment import Fragment
+from models.feature_vector import FeatureVector
 from recovery.evidence_hash import create_evidence_record
 from recovery.carving import carve_fragments
 from recovery.entropy import characterize_fragment
+from recovery.fingerprinting import fit_and_fingerprint
 from .pipeline_context import PipelineContext
 from .pipeline_status import PipelineStatus, PipelineStage
 
@@ -61,11 +63,35 @@ def run_stage_2(
 
     return evidence, characterized_fragments
 
+def run_stage_3(
+    evidence_path: str, status_callback: Optional[callable] = None
+) -> Tuple[Evidence, List[Fragment], List[FeatureVector]]:
+    """
+    Execute Stage 3: Stage 1 (carving) + Stage 2 (characterization) + Stage 3 (fingerprinting).
+    
+    Returns:
+        (Evidence record, list of characterized Fragment objects, list of FeatureVector objects)
+    """
+    evidence, fragments = run_stage_2(evidence_path, status_callback=status_callback)
+
+    status = PipelineStatus()
+    if status_callback:
+        status.update(PipelineStage.FRAGMENT_ANALYSIS, 0.9, f"Generating feature vectors for {len(fragments)} fragments")
+        status_callback(status)
+
+    features = fit_and_fingerprint(fragments)
+
+    if status_callback:
+        status.update(PipelineStage.FRAGMENT_ANALYSIS, 1.0, f"Fingerprinted {len(features)} feature vectors")
+        status_callback(status)
+
+    return evidence, fragments, features
+
 def run_pipeline(evidence_path: str, status_callback: Optional[callable] = None) -> RankedResults:
     """
     Main 14-stage Pipeline Orchestrator.
     
-    Stages 3-14 are intentionally deferred; use run_stage_1 / run_stage_2 for completed stages.
+    Stages 4-14 are intentionally deferred; use run_stage_1 / run_stage_2 / run_stage_3 for completed stages.
     """
     context = PipelineContext(evidence_path=evidence_path)
     status = PipelineStatus()
@@ -75,6 +101,6 @@ def run_pipeline(evidence_path: str, status_callback: Optional[callable] = None)
         status_callback(status)
 
     raise NotImplementedError(
-        "Full 14-stage pipeline is deferred in Stage 2. "
-        "Use run_stage_2(evidence_path) for Stage 2 evidence ingestion, carving, and characterization."
+        "Full 14-stage pipeline is deferred in Stage 3. "
+        "Use run_stage_3(evidence_path) for Stage 3 evidence ingestion, carving, characterization, and fingerprinting."
     )

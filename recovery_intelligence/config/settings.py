@@ -17,7 +17,7 @@ class Settings(BaseModel):
     DEFAULT_FRAGMENT_SIZE: int = 512
     MAX_EVIDENCE_SIZE_MB: int = 1024
     
-    # Stage 2 Entropy & Characterization Settings (Configurable defaults)
+    # Stage 2 Entropy & Characterization Settings
     ENTROPY_WINDOW_SIZE: int = 128
     ENTROPY_STEP_SIZE: int = 32
     PRINTABLE_RATIO_TEXT_THRESHOLD: float = 0.85
@@ -25,6 +25,11 @@ class Settings(BaseModel):
     ENTROPY_TEXT_MAX: float = 5.8
     ENTROPY_BINARY_MIN: float = 6.5
     MIXED_ENTROPY_DELTA: float = 1.8
+    
+    # Stage 3 Fingerprinting & Embedding Settings
+    BINARY_TFIDF_NGRAM_RANGE: tuple = (2, 2)
+    BINARY_SVD_COMPONENTS: int = 64
+    FINGERPRINT_DIMENSION: int = 64
     
     # AI Models
     EMBEDDING_MODEL_NAME: str = "sentence-transformers/all-MiniLM-L6-v2"

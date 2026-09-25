@@ -1,7 +1,7 @@
-import streamlit as st
+﻿import streamlit as st
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List
 
 # Add project root directory to python path
 ROOT_DIR = Path(__file__).resolve().parent
@@ -11,6 +11,7 @@ if str(ROOT_DIR) not in sys.path:
 from config import settings
 from models.evidence import Evidence
 from models.fragment import Fragment
+from models.feature_vector import FeatureVector
 from visualization import (
     render_overview,
     render_ranked_results,
@@ -20,7 +21,7 @@ from visualization import (
     render_narrative,
 )
 from storage import load_cached_results
-from pipeline import run_pipeline, run_stage_1, run_stage_2
+from pipeline import run_pipeline, run_stage_1, run_stage_2, run_stage_3
 
 st.set_page_config(
     page_title="AI-Assisted Intelligent Data Recovery",
@@ -29,7 +30,7 @@ st.set_page_config(
 )
 
 st.title("AI-Assisted Intelligent Data Recovery & Digital Evidence Reconstruction")
-st.caption("CALMSTACKS 24H HACKATHON Project | Stage 1 + Stage 2: Evidence Ingestion, Magic-Byte Carving & Fragment Characterization")
+st.caption("CALMSTACKS 24H HACKATHON Project | Stage 1 + Stage 2 + Stage 3: Carving, Characterization & Fragment Fingerprinting")
 
 # Ensure required directories exist
 settings.EVIDENCE_DIR.mkdir(parents=True, exist_ok=True)
@@ -42,6 +43,8 @@ if "carved_fragments" not in st.session_state:
     st.session_state.carved_fragments = []
 if "characterized_fragments" not in st.session_state:
     st.session_state.characterized_fragments = []
+if "feature_vectors" not in st.session_state:
+    st.session_state.feature_vectors = []
 if "current_results" not in st.session_state:
     st.session_state.current_results = None
 
@@ -51,7 +54,7 @@ st.sidebar.markdown("---")
 
 view_mode = st.sidebar.radio(
     "Select Dashboard View",
-    ["Stage 1: Carving", "Stage 2: Characterization", "Overview", "Ranked Results", "File Detail", "Relationship Graph", "Narrative Report"],
+    ["Stage 1: Carving", "Stage 2: Characterization", "Stage 3: Fingerprinting", "Overview", "Ranked Results", "File Detail", "Relationship Graph", "Narrative Report"],
 )
 
 st.sidebar.markdown("---")
@@ -97,6 +100,7 @@ st.sidebar.markdown("---")
 col_btn1, col_btn2 = st.sidebar.columns(2)
 run_stage1_clicked = col_btn1.button("Run Stage 1 Carve", type="primary")
 run_stage2_clicked = col_btn2.button("Run Stage 2 Characterize", type="secondary")
+run_stage3_clicked = st.sidebar.button("Run Stage 3 Fingerprint")
 st.sidebar.markdown("")
 run_full_clicked = st.sidebar.button("Run Full Pipeline (Deferred)")
 
@@ -137,6 +141,21 @@ if run_stage2_clicked:
         except Exception as e:
             st.sidebar.error(f"Stage 2 Characterization Error: {e}")
 
+if run_stage3_clicked:
+    if not target_path:
+        st.sidebar.warning("Please select or upload an evidence image first.")
+    else:
+        try:
+            with st.spinner("Running Stage 3: generating 64D feature vectors..."):
+                evidence, characterized, features = run_stage_3(target_path)
+                st.session_state.evidence_record = evidence
+                st.session_state.carved_fragments = characterized
+                st.session_state.characterized_fragments = characterized
+                st.session_state.feature_vectors = features
+                st.sidebar.success(f"Generated {len(features)} 64D feature vectors!")
+        except Exception as e:
+            st.sidebar.error(f"Stage 3 Fingerprinting Error: {e}")
+
 if run_full_clicked:
     if not target_path:
         st.sidebar.warning("Please select or upload an evidence image first.")
@@ -161,7 +180,6 @@ if view_mode == "Stage 1: Carving":
     if not evidence:
         st.info("No evidence image analyzed yet. Select or upload an evidence file from the sidebar and click 'Run Stage 1 Carve'.")
     else:
-        # Evidence Metadata Cards
         st.subheader("Evidence Integrity & Source")
         c1, c2, c3 = st.columns([1, 1, 2])
         c1.metric("Evidence ID", evidence.evidence_id)
@@ -223,7 +241,6 @@ elif view_mode == "Stage 2: Characterization":
                 f"{len(fragments)} fragments characterized"
             )
 
-        # Summary metrics
         text_c = sum(1 for f in fragments if f.metadata.get("characterization") == "text")
         binary_c = sum(1 for f in fragments if f.metadata.get("characterization") == "binary")
         mixed_c = sum(1 for f in fragments if f.metadata.get("characterization") == "mixed")
@@ -279,6 +296,73 @@ elif view_mode == "Stage 2: Characterization":
                 )
             else:
                 st.info("No sliding-window data available for this fragment.")
+
+elif view_mode == "Stage 3: Fingerprinting":
+    st.header("Stage 3: Fragment Fingerprinting (64D Feature Vectors)")
+    features: List[FeatureVector] = st.session_state.feature_vectors
+
+    if not features:
+        st.info(
+            "No feature vectors generated yet. Select an evidence file and click "
+            "**Run Stage 3 Fingerprint** in the sidebar."
+        )
+    else:
+        evidence = st.session_state.evidence_record
+        if evidence:
+            st.caption(
+                f"Evidence: `{evidence.source_path}` | SHA-256: `{evidence.sha256[:16]}…` | "
+                f"{len(features)} 64-dimensional feature vectors generated"
+            )
+
+        binary_c = sum(1 for fv in features if fv.metadata.get("fingerprint_method") == "binary_2gram_tfidf_svd")
+        text_emb_c = sum(1 for fv in features if fv.metadata.get("fingerprint_method") == "text_minilm_embedding")
+        text_fb_c = sum(1 for fv in features if fv.metadata.get("fingerprint_method") == "text_tfidf_fallback")
+
+        m1, m2, m3, m4, m5 = st.columns(5)
+        m1.metric("Total Vectors", len(features))
+        m2.metric("Vector Dimension", "64D")
+        m3.metric("Binary 2-Gram SVD", binary_c)
+        m4.metric("Text Embeddings", text_emb_c)
+        m5.metric("Text TF-IDF Fallback", text_fb_c)
+
+        st.markdown("---")
+        st.subheader("Feature Vectors Table")
+
+        table_data = [
+            {
+                "Fragment ID": fv.fragment_id,
+                "Dimension": f"{fv.dimension}D",
+                "Fingerprint Method": fv.metadata.get("fingerprint_method", "-"),
+                "L2 Norm": f"{fv.metadata.get('norm', 0.0):.4f}",
+                "Sample Dimension Preview": str([round(x, 4) for x in fv.vector[:6]]) + "...",
+            }
+            for fv in features
+        ]
+        st.dataframe(table_data, use_container_width=True)
+
+        st.markdown("---")
+        st.subheader("Feature Vector Inspector (64 Dimensions)")
+
+        fv_ids = [fv.fragment_id for fv in features]
+        selected_id = st.selectbox("Select fragment vector to inspect:", fv_ids)
+        selected_fv = next((fv for fv in features if fv.fragment_id == selected_id), None)
+
+        if selected_fv:
+            import pandas as pd
+            chart_df = pd.DataFrame({
+                "Dimension Index": list(range(1, len(selected_fv.vector) + 1)),
+                "Value": selected_fv.vector,
+            }).set_index("Dimension Index")
+
+            st.line_chart(chart_df, height=250)
+            st.caption(
+                f"Method: `{selected_fv.metadata.get('fingerprint_method', '-')}` | "
+                f"Vector Length: `{len(selected_fv.vector)}` | "
+                f"L2 Norm: `{selected_fv.metadata.get('norm', 0.0):.4f}`"
+            )
+
+            with st.expander("View Complete 64-Dimensional Float Array"):
+                st.write(selected_fv.vector)
 
 elif view_mode == "Overview":
     render_overview(st.session_state.current_results)
