@@ -6,7 +6,12 @@ from config import settings
 from models.fragment import Fragment
 from models.feature_vector import FeatureVector
 from models.cluster import FragmentCluster
-from recovery.relationship_graph import calculate_cosine_similarity
+from recovery.relationship_graph import (
+    calculate_cosine_similarity,
+    calculate_offset_proximity,
+    calculate_type_compatibility,
+    calculate_edge_weight,
+)
 
 
 def _run_dbscan(
@@ -67,7 +72,10 @@ def cluster_fragments(
     min_samples: Optional[int] = None,
 ) -> Tuple[List[FragmentCluster], List[str]]:
     """
-    Cluster fragment feature vectors using DBSCAN on cosine distance.
+    Cluster fragment feature vectors conservatively using DBSCAN on composite forensic distance.
+    
+    Prevents cross-file merging by requiring spatial proximity, type compatibility, and
+    header/footer role coherence in addition to feature similarity.
     
     Returns:
         (List[FragmentCluster], List[str] of orphan fragment IDs)
@@ -81,21 +89,60 @@ def cluster_fragments(
     n = len(features)
     frag_map: Dict[str, Fragment] = {f.id: f for f in fragments} if fragments else {}
 
-    # Build NxN cosine distance matrix
-    dist_matrix = np.zeros((n, n), dtype=np.float64)
-    for i in range(n):
-        for j in range(i + 1, n):
-            sim = calculate_cosine_similarity(features[i].vector, features[j].vector)
-            dist = max(0.0, 1.0 - max(0.0, sim))
+    # Build NxN composite forensic distance matrix
+    dist_matrix = np.ones((n, n), dtype=np.float64)
+    np.fill_diagonal(dist_matrix, 0.0)
 
-            # Group linkage for disrupted file continuation fragments
-            if fragments and features[i].fragment_id in frag_map and features[j].fragment_id in frag_map:
-                fa = frag_map[features[i].fragment_id]
-                fb = frag_map[features[j].fragment_id]
-                grp_a = fa.metadata.get("group_id")
-                grp_b = fb.metadata.get("group_id")
+    for i in range(n):
+        fid_i = features[i].fragment_id
+        frag_i = frag_map.get(fid_i)
+
+        for j in range(i + 1, n):
+            fid_j = features[j].fragment_id
+            frag_j = frag_map.get(fid_j)
+
+            sim = calculate_cosine_similarity(features[i].vector, features[j].vector)
+
+            if frag_i and frag_j:
+                # 1. Source constraint: different sources cannot cluster
+                if frag_i.source != frag_j.source:
+                    dist_matrix[i, j] = 1.0
+                    dist_matrix[j, i] = 1.0
+                    continue
+
+                # 2. Incompatible file types cannot cluster
+                type_m = calculate_type_compatibility(frag_i, frag_j)
+                if type_m <= 0.0:
+                    dist_matrix[i, j] = 1.0
+                    dist_matrix[j, i] = 1.0
+                    continue
+
+                # 3. Two distinct header fragments of the same type cannot merge into one cluster
+                if frag_i.header_flag and frag_j.header_flag and frag_i.offset != frag_j.offset:
+                    dist_matrix[i, j] = 1.0
+                    dist_matrix[j, i] = 1.0
+                    continue
+
+                prox = calculate_offset_proximity(frag_i, frag_j)
+                
+                # 4. Proximity constraint: distant fragments cannot merge purely by cosine similarity
+                # If offset gap is large (prox < 0.15, ~120KB+ gap without filesystem extent), do not cluster
+                if prox < 0.15:
+                    dist_matrix[i, j] = 1.0
+                    dist_matrix[j, i] = 1.0
+                    continue
+
+                # 5. Disrupted file extent linkage (same candidate group_id)
+                grp_a = frag_i.metadata.get("group_id")
+                grp_b = frag_j.metadata.get("group_id")
                 if grp_a and grp_b and grp_a == grp_b:
                     dist = 0.05
+                else:
+                    # Multi-signal edge weight: weighted combination of similarity, proximity, type
+                    weight = calculate_edge_weight(sim, prox, type_m)
+                    dist = max(0.0, min(1.0, 1.0 - weight))
+            else:
+                dist = max(0.0, min(1.0, 1.0 - max(0.0, sim)))
 
             dist_matrix[i, j] = dist
             dist_matrix[j, i] = dist
@@ -138,7 +185,7 @@ def cluster_fragments(
         else:
             inferred_type = "unknown"
 
-        # Calculate cluster confidence (mean pairwise similarity)
+        # Calculate cluster confidence (mean pairwise similarity & proximity)
         if len(member_indices) > 1:
             sims = []
             for a_i in range(len(member_indices)):
@@ -154,7 +201,7 @@ def cluster_fragments(
 
         reason = (
             f"{len(member_fids)} fragments grouped (inferred type: '{inferred_type}') "
-            f"with mean intra-cluster vector similarity of {confidence:.2f} (DBSCAN eps={eps_val:.2f})"
+            f"with mean intra-cluster vector similarity of {confidence:.2f} (conservative DBSCAN eps={eps_val:.2f})"
         )
 
         cluster_obj = FragmentCluster(

@@ -167,6 +167,8 @@ def run_stage_5(
 
     frag_map = {f.id: f for f in fragments}
     reconstructed_files: List[ReconstructedFile] = []
+    final_clusters = list(clusters)
+    processed_fids = set()
 
     for i, cluster in enumerate(clusters):
         member_frags = [frag_map[fid] for fid in cluster.member_fragment_ids if fid in frag_map]
@@ -181,6 +183,24 @@ def run_stage_5(
             recon = reconstruct_structured_file(cluster, member_frags)
 
         reconstructed_files.append(recon)
+        processed_fids.update(cluster.member_fragment_ids)
+
+    # Reconstruct standalone orphan candidates with header_flag
+    for orphan_id in orphans:
+        if orphan_id not in processed_fids and orphan_id in frag_map:
+            frag = frag_map[orphan_id]
+            if frag.header_flag:
+                single_cl = FragmentCluster(
+                    cluster_id=f"cluster_{frag.id.lower()}",
+                    member_fragment_ids=[frag.id],
+                    inferred_type=frag.type_hint,
+                    confidence=1.0,
+                    reason=f"Standalone carved {frag.type_hint} candidate",
+                )
+                final_clusters.append(single_cl)
+                recon = reconstruct_structured_file(single_cl, [frag])
+                reconstructed_files.append(recon)
+                processed_fids.add(frag.id)
 
     if status_callback:
         status.update(
@@ -190,7 +210,7 @@ def run_stage_5(
         )
         status_callback(status)
 
-    return evidence, fragments, features, graph, clusters, orphans, reconstructed_files
+    return evidence, fragments, features, graph, final_clusters, orphans, reconstructed_files
 
 def run_stage_6(
     evidence_path: str, status_callback: Optional[callable] = None
@@ -532,6 +552,8 @@ def run_full_pipeline(
 
         frag_map = {f.id: f for f in characterized_fragments}
         reconstructed_files: List[ReconstructedFile] = []
+        processed_fids = set()
+
         for cluster in clusters:
             member_frags = [frag_map[fid] for fid in cluster.member_fragment_ids if fid in frag_map]
             inferred = (cluster.inferred_type or "").lower()
@@ -543,6 +565,23 @@ def run_full_pipeline(
             else:
                 recon = reconstruct_structured_file(cluster, member_frags)
             reconstructed_files.append(recon)
+            processed_fids.update(cluster.member_fragment_ids)
+
+        for orphan_id in orphans:
+            if orphan_id not in processed_fids and orphan_id in frag_map:
+                frag = frag_map[orphan_id]
+                if frag.header_flag:
+                    single_cl = FragmentCluster(
+                        cluster_id=f"cluster_{frag.id.lower()}",
+                        member_fragment_ids=[frag.id],
+                        inferred_type=frag.type_hint,
+                        confidence=1.0,
+                        reason=f"Standalone carved {frag.type_hint} candidate",
+                    )
+                    clusters.append(single_cl)
+                    recon = reconstruct_structured_file(single_cl, [frag])
+                    reconstructed_files.append(recon)
+                    processed_fids.add(frag.id)
         stage_5_duration = time.perf_counter() - t0
         stage_durations["stage_5_duration"] = stage_5_duration
     except Exception as e:

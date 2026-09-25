@@ -1110,18 +1110,20 @@ elif view_mode == "Stage 8: Classification & Priority":
 
 elif view_mode == "File Detail":
     selected_file = None
+    ev_sha = st.session_state.active_evidence_sha256 or (st.session_state.evidence_record.sha256 if st.session_state.evidence_record else "")
     if st.session_state.reconstructed_files:
-        cand_ids = [r.id for r in st.session_state.reconstructed_files]
+        cand_ids = [r.candidate_id or r.id for r in st.session_state.reconstructed_files]
         chosen_id = st.selectbox("Select Candidate File", options=cand_ids)
-        selected_file = next((r for r in st.session_state.reconstructed_files if r.id == chosen_id), None)
-    elif st.session_state.current_results and st.session_state.current_results.files:
+        selected_file = next((r for r in st.session_state.reconstructed_files if (r.candidate_id or r.id) == chosen_id), None)
+    elif st.session_state.current_results and hasattr(st.session_state.current_results, "reconstructed_files") and st.session_state.current_results.reconstructed_files:
+        selected_file = st.session_state.current_results.reconstructed_files[0]
+    elif st.session_state.current_results and hasattr(st.session_state.current_results, "files") and st.session_state.current_results.files:
         selected_file = st.session_state.current_results.files[0]
-    render_file_detail(selected_file)
-    if selected_file:
-        render_integrity_signals(selected_file)
+    render_file_detail(selected_file, evidence_sha256=ev_sha)
 elif view_mode == "Relationship Graph":
     graph_data = st.session_state.relationship_graph if st.session_state.relationship_graph else (st.session_state.current_results.relationship_graph if hasattr(st.session_state.current_results, "relationship_graph") else None)
     render_relationship_graph(graph_data)
 elif view_mode == "Narrative Report":
     narrative_data = getattr(st.session_state.current_results, "narrative", None)
-    render_narrative(narrative_data)
+    res_obj = st.session_state.active_pipeline_result or st.session_state.current_results
+    render_narrative(narrative=narrative_data, pipeline_result=res_obj)

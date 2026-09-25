@@ -1,4 +1,4 @@
-﻿import math
+import math
 from typing import List, Dict, Any, Optional
 import numpy as np
 
@@ -42,7 +42,7 @@ def calculate_offset_proximity(fragment_a: Fragment, fragment_b: Fragment) -> fl
     Returns:
         Float in [0.0, 1.0] decaying exponentially with byte distance gap.
     """
-    if fragment_a.source != fragment_b.source or not fragment_a.source:
+    if fragment_a.source and fragment_b.source and fragment_a.source != fragment_b.source:
         return 0.0
 
     start_a, end_a = fragment_a.offset, fragment_a.offset + fragment_a.length
@@ -161,6 +161,14 @@ def build_relationship_graph(
             weight = calculate_edge_weight(sim, prox, type_m)
 
             if weight >= min_w or sim >= float(settings.COSINE_SIMILARITY_THRESHOLD):
+                # Classify relationship basis
+                if prox >= 0.50 and type_m >= 0.80:
+                    rel_basis = "STRUCTURAL_SPATIAL"
+                elif frag_a.metadata.get("extent_linked") or frag_b.metadata.get("extent_linked"):
+                    rel_basis = "FILESYSTEM_EXTENT"
+                else:
+                    rel_basis = "HEURISTIC_SIMILARITY"
+
                 # Build human-readable reason
                 reasons = []
                 if sim >= 0.7:
@@ -181,6 +189,7 @@ def build_relationship_graph(
                     "offset_proximity": prox,
                     "type_match": type_m,
                     "edge_weight": weight,
+                    "relationship_basis": rel_basis,
                     "reason": reason_str,
                 })
 

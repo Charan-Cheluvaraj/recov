@@ -61,10 +61,11 @@ def render_file_preview(output_path: Optional[str], file_type: str = "unknown") 
     st.markdown("##### Artifact Preview")
 
     # 1. Images (JPEG, PNG, etc.)
-    if ftype in ("jpeg", "jpg", "png", "image"):
+    if ftype in ("jpeg", "jpg", "png", "gif", "bmp", "image"):
         try:
             from PIL import Image
             img = Image.open(io.BytesIO(raw_bytes))
+            img.load()  # Strict raster validation
             st.image(img, caption=f"Recovered Image ({img.width}x{img.height}, format={img.format})", use_container_width=True)
             return
         except Exception as e:

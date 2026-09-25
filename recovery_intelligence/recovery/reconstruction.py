@@ -14,14 +14,22 @@ from .text_reconstruction import read_fragment_bytes, compute_gap_information
 EXTENSION_MAP = {
     "jpeg": ".jpg",
     "jpg": ".jpg",
+    "png": ".png",
+    "gif": ".gif",
+    "bmp": ".bmp",
     "pdf": ".pdf",
     "docx": ".docx",
+    "xlsx": ".xlsx",
+    "pptx": ".pptx",
     "zip": ".zip",
     "sqlite": ".sqlite",
     "sqlite3": ".sqlite",
     "db": ".sqlite",
+    "wav": ".wav",
     "text": ".txt",
     "txt": ".txt",
+    "raw": ".bin",
+    "unknown": ".bin",
 }
 
 
@@ -42,12 +50,20 @@ def infer_cluster_file_type(cluster: FragmentCluster, fragments: List[Fragment])
         raw_b = read_fragment_bytes(first_frag)
         if raw_b.startswith(b"\xff\xd8"):
             return "jpeg"
+        elif raw_b.startswith(b"\x89PNG\r\n\x1a\n"):
+            return "png"
+        elif raw_b.startswith(b"GIF87a") or raw_b.startswith(b"GIF89a"):
+            return "gif"
+        elif raw_b.startswith(b"BM"):
+            return "bmp"
         elif raw_b.startswith(b"%PDF-"):
             return "pdf"
         elif raw_b.startswith(b"PK\x03\x04"):
             return "zip"
         elif raw_b.startswith(b"SQLite format 3\x00"):
             return "sqlite"
+        elif len(raw_b) >= 12 and raw_b[:4] == b"RIFF" and raw_b[8:12] == b"WAVE":
+            return "wav"
     
     return "unknown"
 
@@ -60,9 +76,9 @@ def reconstruct_structured_file(
     """
     Reconstruct a candidate structured binary or document file from a fragment cluster.
     
-    Orders fragment members deterministically by evidence offset, computes gap metadata,
-    assembles candidate bytes, writes the candidate to recovered/, and validates with
-    the corresponding real parser.
+    Orders fragment members deterministically by evidence offset, computes union coverage
+    and gap metadata, assembles candidate bytes, writes the candidate to disk, and
+    validates with the corresponding real parser.
     """
     candidate_id = f"recon_{cluster.cluster_id}"
     out_dir = output_dir or settings.RECOVERED_DIR
@@ -71,6 +87,7 @@ def reconstruct_structured_file(
     if not fragments:
         return ReconstructedFile(
             id=candidate_id,
+            candidate_id=candidate_id,
             cluster_id=cluster.cluster_id,
             file_type=cluster.inferred_type or "unknown",
             fragment_ids=[],
@@ -79,6 +96,9 @@ def reconstruct_structured_file(
             status="cluster_only",
             parser_message="No member fragments available in cluster for reconstruction",
             ambiguous=False,
+            is_validated_recovery=False,
+            recovery_status="UNRECOVERABLE",
+            recovery_state="UNRECOVERABLE",
         )
 
     # 1. Determine candidate file type
@@ -89,7 +109,7 @@ def reconstruct_structured_file(
     # 2. Order fragment members deterministically by evidence offset (tie-break by ID)
     ordered_fragments = sorted(fragments, key=lambda f: (f.offset, f.id))
 
-    # 3. Read bytes in read-only mode & compute gap information
+    # 3. Read bytes in read-only mode & compute union coverage & gap information
     gap_info = compute_gap_information(ordered_fragments)
     
     byte_chunks = []
@@ -111,17 +131,40 @@ def reconstruct_structured_file(
     if valid:
         status = "reconstructed"
         structural_validity = 1.0
+        val_status = "VALIDATED"
     else:
         status = "validation_failed"
         structural_validity = 0.0
+        val_status = "FAILED"
+
+    unique_rec = gap_info.get("unique_recovered_bytes", len(assembled_bytes))
+    raw_bytes = gap_info.get("raw_fragment_bytes", len(assembled_bytes))
+    missing_b = gap_info.get("total_gap_bytes", 0)
+    obs_span = gap_info.get("observed_candidate_span", unique_rec + missing_b)
+    obs_ratio = round(unique_rec / obs_span, 4) if obs_span > 0 else 1.0
 
     return ReconstructedFile(
         id=candidate_id,
+        candidate_id=candidate_id,
         cluster_id=cluster.cluster_id,
         file_type=file_type,
         fragment_ids=[f.id for f in ordered_fragments],
+        fragment_count=len(ordered_fragments),
+        source_offsets=[f.offset for f in ordered_fragments],
+        source_ranges=gap_info.get("source_ranges", []),
+        raw_fragment_bytes=raw_bytes,
+        unique_recovered_bytes=unique_rec,
+        recovered_bytes=unique_rec,
+        overlap_bytes=gap_info.get("overlap_bytes", 0),
+        duplicate_bytes=gap_info.get("overlap_bytes", 0),
+        gap_count=gap_info.get("gap_count", 0),
+        missing_or_unknown_bytes=missing_b,
+        observed_candidate_span=obs_span,
+        observed_recovery_ratio=obs_ratio,
         gap_information=gap_info,
         structural_validity=structural_validity,
+        parser_validation_status=val_status,
+        is_validated_recovery=valid,
         status=status,
         parser_message=parser_msg,
         ambiguous=False,

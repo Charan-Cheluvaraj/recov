@@ -45,31 +45,34 @@ def render_analyst_workspace(result: Optional[PipelineResult] = None) -> None:
     m1, m2, m3, m4, m5, m6 = st.columns(6)
 
     total_frags = len(result.fragments)
-    total_clusters = len(result.clusters)
     total_cands = len(result.reconstructed_files)
-    struct_valid = sum(1 for r in result.reconstructed_files if (r.structural_validity or 0.0) >= 1.0)
-    sensitive_cands = sum(1 for r in result.reconstructed_files if (r.sensitivity_level or "NONE") != "NONE")
+    
+    val_count = sum(1 for r in result.reconstructed_files if r.is_successfully_recovered or r.recovery_state in ("FULL_RECOVERY", "VALIDATED_RECOVERY"))
+    partial_count = sum(1 for r in result.reconstructed_files if r.recovery_state == "PARTIAL_RECONSTRUCTION")
+    raw_count = sum(1 for r in result.reconstructed_files if r.recovery_state == "RAW_BINARY_RECOVERY")
+    invalid_count = sum(1 for r in result.reconstructed_files if r.recovery_state in ("INVALID_RECONSTRUCTION", "UNRECOVERABLE"))
+    
     avg_recov = (
         sum(r.observed_recovery_ratio for r in result.reconstructed_files) / max(1, total_cands)
     )
 
-    m1.metric("Fragments Carved", total_frags)
-    m2.metric("Clusters Formed", total_clusters)
-    m3.metric("Reconstruction Cands", total_cands)
-    m4.metric("Structurally Valid", struct_valid)
-    m5.metric("Sensitive Candidates", sensitive_cands)
-    m6.metric("Avg Observed Recovery", f"{avg_recov * 100:.1f}%")
+    m1.metric("Carved Fragments", total_frags)
+    m2.metric("Reconstruction Cands", total_cands)
+    m3.metric("Validated Recoveries", val_count)
+    m4.metric("Partial Candidates", partial_count)
+    m5.metric("Raw Binary Salvage", raw_count)
+    m6.metric("Avg Observed Ratio", f"{avg_recov * 100:.1f}%")
 
     st.markdown("---")
 
     # ============================================================
-    # SECTION 3: Recovered File Cards
+    # SECTION 3: Forensic Candidate Cards
     # ============================================================
-    st.subheader("3. Recovered File Cards")
+    st.subheader("3. Forensic Candidate Cards")
     if not result.reconstructed_files:
         st.info("No file candidates reconstructed from current evidence.")
     else:
-        # Display up to 4 file cards side-by-side or in rows
+        # Display up to 3 file cards side-by-side
         card_cols = st.columns(min(3, max(1, len(result.reconstructed_files))))
         for idx, cand in enumerate(result.reconstructed_files):
             col_idx = idx % len(card_cols)
@@ -77,9 +80,10 @@ def render_analyst_workspace(result: Optional[PipelineResult] = None) -> None:
                 with st.container(border=True):
                     cand_id = cand.candidate_id or cand.id
                     st.markdown(f"#### Rank {idx + 1}: `{cand_id}`")
-                    st.caption(f"Format: **{cand_id.split('.')[-1].upper() if '.' in cand_id else cand.file_type.upper()}** | Status: `{cand.recovery_status}`")
+                    st.caption(f"Format: **{cand.file_type.upper()}** | State: `{cand.recovery_state or cand.recovery_status}`")
                     st.markdown(f"**Observed Recovery:** `{cand.observed_recovery_ratio * 100:.1f}%`")
-                    st.markdown(f"**Recovered Bytes:** `{cand.recovered_bytes:,}` B")
+                    st.markdown(f"**Recovered Bytes:** `{cand.unique_recovered_bytes or cand.recovered_bytes:,}` B")
+                    st.markdown(f"**Structural Validity:** `{'VALID' if cand.structural_validity >= 1.0 else 'FAILED'}`")
                     st.markdown(f"**Priority Score:** `{cand.priority_score:.4f}` ({cand.sensitivity_level})")
 
                     if cand.output_path and os.path.exists(cand.output_path):

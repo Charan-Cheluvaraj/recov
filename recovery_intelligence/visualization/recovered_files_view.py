@@ -8,78 +8,109 @@ from .file_preview import render_file_preview
 
 
 def render_recovered_files_view(reconstructed_list: Optional[List[ReconstructedFile]] = None) -> None:
-    """Render dedicated Recovered Files view with interactive table, inspection, and multi-format preview."""
+    """Render dedicated Recovered Files view with interactive tables, inspection, and multi-format preview."""
     st.header("Recovered Files & Artifact Inspection")
-    st.caption("Inspect and download reconstructed digital evidence artifacts with forensic integrity and recoverability metrics.")
+    st.caption("Inspect and download digital evidence artifacts separated strictly into validated recoveries, partial candidates, raw binary salvage, and invalid reconstructions.")
 
     if not reconstructed_list:
         st.info("No recovered file artifacts available. Select an evidence image and click 'RUN FULL RECOVERY ANALYSIS'.")
         return
 
-    # 1. High-Level Summary Metrics
-    c1, c2, c3, c4 = st.columns(4)
-    total_candidates = len(reconstructed_list)
-    artifacts_on_disk = sum(1 for r in reconstructed_list if r.output_path and os.path.exists(r.output_path))
-    avg_ratio = (
-        sum(r.observed_recovery_ratio for r in reconstructed_list) / max(1, total_candidates)
-    )
-    total_rec_bytes = sum(r.recovered_bytes for r in reconstructed_list)
+    # 1. High-Level Categorized Summary Metrics
+    c1, c2, c3, c4, c5 = st.columns(5)
+    
+    validated_cands = [r for r in reconstructed_list if r.is_successfully_recovered or r.recovery_state in ("FULL_RECOVERY", "VALIDATED_RECOVERY")]
+    partial_cands = [r for r in reconstructed_list if r.recovery_state == "PARTIAL_RECONSTRUCTION"]
+    invalid_cands = [r for r in reconstructed_list if r.recovery_state in ("INVALID_RECONSTRUCTION", "UNRECOVERABLE")]
+    raw_cands = [r for r in reconstructed_list if r.recovery_state == "RAW_BINARY_RECOVERY"]
 
-    c1.metric("Total Candidates", total_candidates)
-    c2.metric("Artifacts on Disk", artifacts_on_disk)
-    c3.metric("Avg Observed Recovery Ratio", f"{avg_ratio * 100:.1f}%")
-    c4.metric("Total Recovered Bytes", f"{total_rec_bytes:,} B")
+    avg_ratio = (
+        sum(r.observed_recovery_ratio for r in reconstructed_list) / max(1, len(reconstructed_list))
+    )
+
+    c1.metric("Validated Recoveries", len(validated_cands))
+    c2.metric("Partial Candidates", len(partial_cands))
+    c3.metric("Raw Binary Salvage", len(raw_cands))
+    c4.metric("Invalid Reconstructions", len(invalid_cands))
+    c5.metric("Avg Observed Ratio", f"{avg_ratio * 100:.1f}%")
 
     st.markdown("---")
 
-    # 2. Recovered Files Table
-    st.subheader("All Recovered File Candidates")
+    # 2. Categorized Tabs
+    tab_all, tab_val, tab_part, tab_raw, tab_inv = st.tabs([
+        f"All Candidates ({len(reconstructed_list)})",
+        f"Validated Recoveries ({len(validated_cands)})",
+        f"Partial Candidates ({len(partial_cands)})",
+        f"Raw Binary Salvage ({len(raw_cands)})",
+        f"Invalid Reconstructions ({len(invalid_cands)})",
+    ])
 
-    table_rows = [
-        {
-            "Rank": idx + 1,
-            "Candidate ID": r.candidate_id or r.id,
-            "File Type": r.file_type.upper(),
-            "Recovery Status": r.recovery_status or r.status,
-            "Recovered Bytes": f"{r.recovered_bytes:,} B",
-            "Missing/Unknown": f"{r.missing_or_unknown_bytes:,} B",
-            "Observed Recovery Ratio": f"{r.observed_recovery_ratio * 100:.1f}%",
-            "Integrity": f"{r.composite_integrity_score * 100:.1f}%",
-            "Sensitivity": r.sensitivity_level or "NONE",
-            "Priority": f"{r.priority_score:.4f}" if r.priority_score is not None else "0.0000",
-            "Output SHA-256": r.output_sha256[:16] + "..." if r.output_sha256 else "—",
-        }
-        for idx, r in enumerate(reconstructed_list)
-    ]
-    st.dataframe(table_rows, use_container_width=True)
+    def _build_table(cands: List[ReconstructedFile]):
+        if not cands:
+            st.info("No candidates in this category.")
+            return
+        table_rows = [
+            {
+                "Candidate ID": r.candidate_id or r.id,
+                "File Type": r.file_type.upper(),
+                "Recovery State": r.recovery_state or r.recovery_status,
+                "Unique Rec. Bytes": f"{r.unique_recovered_bytes or r.recovered_bytes:,} B",
+                "Missing/Gaps": f"{r.missing_or_unknown_bytes:,} B",
+                "Observed Recovery Ratio": f"{r.observed_recovery_ratio * 100:.1f}%",
+                "Parser Validity": "VALID" if r.structural_validity >= 1.0 else "FAILED",
+                "Integrity": f"{r.composite_integrity_score * 100:.1f}%",
+                "Priority": f"{r.priority_score:.4f}" if r.priority_score is not None else "0.0000",
+                "Output SHA-256": r.output_sha256[:16] + "..." if r.output_sha256 else "—",
+            }
+            for r in cands
+        ]
+        st.dataframe(table_rows, use_container_width=True)
+
+    with tab_all:
+        _build_table(reconstructed_list)
+    with tab_val:
+        _build_table(validated_cands)
+    with tab_part:
+        _build_table(partial_cands)
+    with tab_raw:
+        _build_table(raw_cands)
+    with tab_inv:
+        _build_table(invalid_cands)
 
     st.markdown("---")
 
     # 3. Candidate Inspector, Preview, and Download
     st.subheader("Candidate Artifact Inspector")
     cand_options = [r.candidate_id or r.id for r in reconstructed_list]
-    selected_id = st.selectbox("Select Candidate to Preview & Download", options=cand_options)
+    selected_id = st.selectbox("Select Candidate to Inspect & Preview", options=cand_options)
     selected_recon = next((r for r in reconstructed_list if (r.candidate_id or r.id) == selected_id), None)
 
     if selected_recon:
         col_left, col_right = st.columns([1, 1])
 
         with col_left:
-            st.markdown("##### Candidate Metadata")
+            st.markdown("##### Forensic Candidate Metadata")
             st.markdown(f"**Candidate ID:** `{selected_recon.candidate_id or selected_recon.id}`")
             st.markdown(f"**Associated Cluster:** `{selected_recon.cluster_id}`")
             st.markdown(f"**File Format:** `{selected_recon.file_type.upper()}`")
-            st.markdown(f"**Recovery Status:** `{selected_recon.recovery_status}`")
+            st.markdown(f"**Recovery State:** `{selected_recon.recovery_state or selected_recon.recovery_status}`")
             st.markdown(f"**Observed Recovery Ratio:** `{selected_recon.observed_recovery_ratio * 100:.2f}%` ({selected_recon.observed_recovery_ratio:.4f})")
-            st.markdown(f"**Recovered Bytes:** `{selected_recon.recovered_bytes:,}` B")
-            st.markdown(f"**Missing/Unknown Bytes:** `{selected_recon.missing_or_unknown_bytes:,}` B")
+            
+            if selected_recon.logical_recovery_ratio_available and selected_recon.logical_recovery_ratio is not None:
+                st.markdown(f"**Logical File Recovery:** `{selected_recon.logical_recovery_ratio * 100:.2f}%` (Known Size: {selected_recon.known_original_size:,} B)")
+            else:
+                st.markdown("**Logical File Recovery:** `Unavailable` *(requires filesystem metadata)*")
+
+            st.markdown(f"**Unique Recovered Bytes:** `{selected_recon.unique_recovered_bytes or selected_recon.recovered_bytes:,}` B")
+            st.markdown(f"**Overlap/Duplicate Bytes:** `{selected_recon.overlap_bytes:,}` B")
+            st.markdown(f"**Missing/Unknown Gap Bytes:** `{selected_recon.missing_or_unknown_bytes:,}` B")
             st.markdown(f"**Observed Candidate Span:** `{selected_recon.observed_candidate_span:,}` B")
-            st.markdown(f"**Structural Validity:** `{selected_recon.structural_validity * 100:.1f}%`")
-            st.markdown(f"**Parser Diagnostic:** {selected_recon.parser_message or 'Valid format syntax'}")
+            st.markdown(f"**Structural Validity:** `{selected_recon.structural_validity * 100:.1f}%` ({selected_recon.parser_validation_status})")
+            st.markdown(f"**Parser Diagnostic:** {selected_recon.parser_message or 'No parser message'}")
 
             st.markdown("##### Forensic Identity")
             st.text_input("Candidate SHA-256 Digest", value=selected_recon.output_sha256 or "N/A", disabled=True)
-            st.markdown(f"**Artifact File Path:** `{selected_recon.output_path or 'Not saved to disk'}`")
+            st.markdown(f"**Artifact Path:** `{selected_recon.output_path or 'Not saved to disk'}`")
 
             # Download button if artifact exists
             if selected_recon.output_path and os.path.exists(selected_recon.output_path):

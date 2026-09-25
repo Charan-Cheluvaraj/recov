@@ -1,8 +1,8 @@
-﻿import streamlit as st
+import streamlit as st
 from typing import Dict, Any, Optional
 
 def render_relationship_graph(graph_data: Optional[Dict[str, Any]] = None) -> None:
-    """Render interactive fragment relationship graph using Graphviz or clean structured view."""
+    """Render interactive fragment relationship graph distinguishing structural vs heuristic edges."""
     st.header("Fragment Relationship Graph")
     if not graph_data or not graph_data.get("nodes"):
         st.info("No relationship graph data available. Run Stage 4 to construct fragment connections.")
@@ -11,11 +11,15 @@ def render_relationship_graph(graph_data: Optional[Dict[str, Any]] = None) -> No
     nodes = graph_data.get("nodes", [])
     edges = graph_data.get("edges", [])
 
-    col1, col2 = st.columns(2)
-    col1.metric("Graph Nodes", len(nodes))
-    col2.metric("Relationship Edges", len(edges))
+    col1, col2, col3 = st.columns(3)
+    struct_edges = sum(1 for e in edges if e.get("relationship_basis") in ("STRUCTURAL_SPATIAL", "FILESYSTEM_EXTENT"))
+    heur_edges = sum(1 for e in edges if e.get("relationship_basis") == "HEURISTIC_SIMILARITY")
 
-    st.caption(f"Visualizing correlation edges with weight >= threshold.")
+    col1.metric("Graph Nodes", len(nodes))
+    col2.metric("Structural Edges", struct_edges)
+    col3.metric("Heuristic Edges", heur_edges)
+
+    st.caption("Visualizing fragment relationships: **Solid/Blue** = Structural/Spatial Proximity, **Dashed/Gray** = Heuristic Similarity.")
 
     if not edges:
         st.warning("No relationship edges above the minimum weight threshold were found.")
@@ -39,12 +43,15 @@ def render_relationship_graph(graph_data: Optional[Dict[str, Any]] = None) -> No
             src = edge["source"]
             tgt = edge["target"]
             w = edge.get("edge_weight", 0.0)
-            sim = edge.get("similarity", 0.0)
-            edge_label = f"w:{w:.2f}\nsim:{sim:.2f}"
-            dot.edge(src, tgt, label=edge_label, fontname="Helvetica", fontsize="9")
+            basis = edge.get("relationship_basis", "HEURISTIC_SIMILARITY")
+            style = "solid" if basis in ("STRUCTURAL_SPATIAL", "FILESYSTEM_EXTENT") else "dashed"
+            color = "#1976d2" if basis in ("STRUCTURAL_SPATIAL", "FILESYSTEM_EXTENT") else "#9e9e9e"
+            edge_label = f"w:{w:.2f}\n{basis[:4]}"
+            dot.edge(src, tgt, label=edge_label, style=style, color=color, fontname="Helvetica", fontsize="8")
 
         st.graphviz_chart(dot, use_container_width=True)
     except Exception:
-        # Fallback table visualization if graphviz executable is not installed
-        st.subheader("Relationship Edges Table")
-        st.dataframe(edges, use_container_width=True)
+        pass
+
+    st.subheader("Relationship Edges Table")
+    st.dataframe(edges, use_container_width=True)

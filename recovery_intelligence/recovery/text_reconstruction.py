@@ -21,30 +21,112 @@ def read_fragment_bytes(fragment: Fragment) -> bytes:
         return b""
 
 
-def compute_gap_information(ordered_fragments: List[Fragment]) -> Dict[str, Any]:
-    """Compute deterministic gap information between sequentially ordered fragments."""
+def compute_union_coverage(fragments: List[Fragment]) -> Dict[str, Any]:
+    """
+    Compute disjoint union intervals, unique byte coverage, overlap bytes,
+    and gap information from fragment evidence offsets.
+    """
+    if not fragments:
+        return {
+            "source_ranges": [],
+            "source_offsets": [],
+            "raw_fragment_bytes": 0,
+            "unique_recovered_bytes": 0,
+            "overlap_bytes": 0,
+            "duplicate_bytes": 0,
+            "has_gaps": False,
+            "gap_count": 0,
+            "total_gap_bytes": 0,
+            "gaps": [],
+            "observed_candidate_span": 0,
+        }
+
+    raw_fragment_bytes = sum(f.length for f in fragments)
+    source_offsets = [f.offset for f in sorted(fragments, key=lambda f: (f.offset, f.id))]
+
+    # Sort intervals by start offset, then end offset
+    raw_intervals = sorted([(f.offset, f.offset + f.length) for f in fragments if f.length > 0])
+    if not raw_intervals:
+        return {
+            "source_ranges": [],
+            "source_offsets": source_offsets,
+            "raw_fragment_bytes": 0,
+            "unique_recovered_bytes": 0,
+            "overlap_bytes": 0,
+            "duplicate_bytes": 0,
+            "has_gaps": False,
+            "gap_count": 0,
+            "total_gap_bytes": 0,
+            "gaps": [],
+            "observed_candidate_span": 0,
+        }
+
+    # Merge overlapping or contiguous intervals into disjoint ranges
+    merged_ranges: List[List[int]] = []
+    for start, end in raw_intervals:
+        if not merged_ranges:
+            merged_ranges.append([start, end])
+        else:
+            prev_start, prev_end = merged_ranges[-1]
+            if start <= prev_end:  # Overlapping or adjacent
+                merged_ranges[-1][1] = max(prev_end, end)
+            else:
+                merged_ranges.append([start, end])
+
+    unique_recovered_bytes = sum(end - start for start, end in merged_ranges)
+    overlap_bytes = max(0, raw_fragment_bytes - unique_recovered_bytes)
+
+    # Compute gaps between disjoint merged ranges
+    sorted_frags = sorted(fragments, key=lambda f: (f.offset, f.id))
     gaps = []
     total_gap_bytes = 0
-    for i in range(len(ordered_fragments) - 1):
-        f_curr = ordered_fragments[i]
-        f_next = ordered_fragments[i + 1]
-        curr_end = f_curr.offset + f_curr.length
-        next_start = f_next.offset
-        if next_start > curr_end:
-            gap_len = next_start - curr_end
+    for i in range(len(merged_ranges) - 1):
+        gap_start = merged_ranges[i][1]
+        gap_end = merged_ranges[i + 1][0]
+        gap_size = gap_end - gap_start
+        if gap_size > 0:
+            prev_f = max((f for f in sorted_frags if f.offset + f.length <= gap_start), key=lambda f: f.offset + f.length, default=None)
+            next_f = min((f for f in sorted_frags if f.offset >= gap_end), key=lambda f: f.offset, default=None)
             gaps.append({
-                "prev_fragment_id": f_curr.id,
-                "next_fragment_id": f_next.id,
-                "gap_start": curr_end,
-                "gap_length": gap_len,
+                "prev_fragment_id": prev_f.id if prev_f else "",
+                "next_fragment_id": next_f.id if next_f else "",
+                "gap_start": gap_start,
+                "gap_end": gap_end,
+                "gap_length": gap_size,
+                "gap_size": gap_size,
             })
-            total_gap_bytes += gap_len
-    
+            total_gap_bytes += gap_size
+
+    observed_span = unique_recovered_bytes + total_gap_bytes
+
     return {
+        "source_ranges": merged_ranges,
+        "source_offsets": source_offsets,
+        "raw_fragment_bytes": raw_fragment_bytes,
+        "unique_recovered_bytes": unique_recovered_bytes,
+        "overlap_bytes": overlap_bytes,
+        "duplicate_bytes": overlap_bytes,
         "has_gaps": len(gaps) > 0,
         "gap_count": len(gaps),
         "total_gap_bytes": total_gap_bytes,
         "gaps": gaps,
+        "observed_candidate_span": observed_span,
+    }
+
+
+def compute_gap_information(ordered_fragments: List[Fragment]) -> Dict[str, Any]:
+    """Compute deterministic gap and interval union information."""
+    cov = compute_union_coverage(ordered_fragments)
+    return {
+        "has_gaps": cov["has_gaps"],
+        "gap_count": cov["gap_count"],
+        "total_gap_bytes": cov["total_gap_bytes"],
+        "gaps": cov["gaps"],
+        "source_ranges": cov["source_ranges"],
+        "unique_recovered_bytes": cov["unique_recovered_bytes"],
+        "raw_fragment_bytes": cov["raw_fragment_bytes"],
+        "overlap_bytes": cov["overlap_bytes"],
+        "observed_candidate_span": cov["observed_candidate_span"],
     }
 
 
