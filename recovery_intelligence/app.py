@@ -23,7 +23,7 @@ from visualization import (
     render_narrative,
 )
 from storage import load_cached_results
-from pipeline import run_pipeline, run_stage_1, run_stage_2, run_stage_3, run_stage_4, run_stage_5
+from pipeline import run_pipeline, run_stage_1, run_stage_2, run_stage_3, run_stage_4, run_stage_5, run_stage_6
 
 st.set_page_config(
     page_title="AI-Assisted Intelligent Data Recovery",
@@ -32,7 +32,7 @@ st.set_page_config(
 )
 
 st.title("AI-Assisted Intelligent Data Recovery & Digital Evidence Reconstruction")
-st.caption("CALMSTACKS 24H HACKATHON Project | Stage 1 + Stage 2 + Stage 3 + Stage 4: Carving, Characterization, Fingerprinting & Clustering")
+st.caption("CALMSTACKS 24H HACKATHON Project | Stage 1 + Stage 2 + Stage 3 + Stage 4 + Stage 5 + Stage 6: Carving, Characterization, Fingerprinting, Clustering, Reconstruction & Decomposed Integrity Scoring")
 
 # Ensure required directories exist
 settings.EVIDENCE_DIR.mkdir(parents=True, exist_ok=True)
@@ -70,6 +70,7 @@ view_mode = st.sidebar.radio(
         "Stage 3: Fingerprinting",
         "Stage 4: Relationships & Clusters",
         "Stage 5: Reconstruction",
+        "Stage 6: Integrity Scoring",
         "Overview",
         "Ranked Results",
         "File Detail",
@@ -126,7 +127,9 @@ col_btn3, col_btn4 = st.sidebar.columns(2)
 run_stage3_clicked = col_btn3.button("Run Stage 3 Fingerprint")
 run_stage4_clicked = col_btn4.button("Run Stage 4 Relationships")
 
-run_stage5_clicked = st.sidebar.button("Run Stage 5 Reconstruction", type="primary")
+col_btn5, col_btn6 = st.sidebar.columns(2)
+run_stage5_clicked = col_btn5.button("Run Stage 5 Reconstruct")
+run_stage6_clicked = col_btn6.button("Run Stage 6 Score", type="primary")
 
 st.sidebar.markdown("")
 run_full_clicked = st.sidebar.button("Run Full Pipeline (Deferred)")
@@ -219,6 +222,25 @@ if run_stage5_clicked:
                 st.sidebar.success(f"Reconstructed and validated {len(reconstructed)} candidate files!")
         except Exception as e:
             st.sidebar.error(f"Stage 5 Reconstruction Error: {e}")
+
+if run_stage6_clicked:
+    if not target_path:
+        st.sidebar.warning("Please select or upload an evidence image first.")
+    else:
+        try:
+            with st.spinner("Running Stage 6: decomposed integrity scoring..."):
+                evidence, characterized, features, graph, clusters, orphans, scored_files = run_stage_6(target_path)
+                st.session_state.evidence_record = evidence
+                st.session_state.carved_fragments = characterized
+                st.session_state.characterized_fragments = characterized
+                st.session_state.feature_vectors = features
+                st.session_state.relationship_graph = graph
+                st.session_state.clusters = clusters
+                st.session_state.orphans = orphans
+                st.session_state.reconstructed_files = scored_files
+                st.sidebar.success(f"Evaluated decomposed integrity scores for {len(scored_files)} candidates!")
+        except Exception as e:
+            st.sidebar.error(f"Stage 6 Scoring Error: {e}")
 
 if run_full_clicked:
     if not target_path:
@@ -617,12 +639,71 @@ elif view_mode == "Stage 5: Reconstruction":
                     ]
                     st.dataframe(gap_rows, use_container_width=True)
 
+elif view_mode == "Stage 6: Integrity Scoring":
+    st.header("Stage 6: Decomposed Integrity Scoring")
+    st.caption("Four independent engineering signals (Confidence, Completeness, Validity, Corruption) combined into a transparent composite score for candidate prioritization.")
+
+    reconstructed_list: List[ReconstructedFile] = st.session_state.reconstructed_files
+
+    if not reconstructed_list:
+        st.info("No candidates scored yet. Select or upload an evidence image and click 'Run Stage 6 Score' from the sidebar.")
+    else:
+        # Summary Metrics
+        st.subheader("Integrity Scoring Summary")
+        m1, m2, m3, m4, m5 = st.columns(5)
+        m1.metric("Candidates", len(reconstructed_list))
+
+        validated_cnt = sum(1 for r in reconstructed_list if r.status == "reconstructed" or r.structural_validity >= 1.0)
+        failed_cnt = sum(1 for r in reconstructed_list if r.status == "validation_failed" or r.structural_validity == 0.0)
+        ambig_cnt = sum(1 for r in reconstructed_list if r.ambiguous or r.status == "ambiguous")
+        avg_integ = sum(r.composite_integrity_score for r in reconstructed_list) / max(1, len(reconstructed_list))
+
+        m2.metric("Validated", validated_cnt)
+        m3.metric("Failed", failed_cnt)
+        m4.metric("Ambiguous", ambig_cnt)
+        m5.metric("Average Integrity", f"{avg_integ * 100:.1f}%")
+
+        st.markdown("---")
+        st.subheader("Candidate Integrity Table")
+
+        score_table = [
+            {
+                "Candidate ID": r.id,
+                "Cluster": r.cluster_id,
+                "File Type": r.file_type.upper(),
+                "Reconstruction Confidence": f"{r.reconstruction_confidence * 100:.1f}%",
+                "Completeness": f"{r.completeness * 100:.1f}%",
+                "Structural Validity": f"{r.structural_validity * 100:.1f}%",
+                "Corruption Estimate": f"{r.corruption_estimate * 100:.1f}%",
+                "Composite Integrity": f"{r.composite_integrity_score * 100:.1f}%",
+                "Status": r.status.upper(),
+            }
+            for r in reconstructed_list
+        ]
+        st.dataframe(score_table, use_container_width=True)
+
+        st.markdown("---")
+        st.subheader("Candidate Signal Breakdown & Inspection")
+
+        cand_options = [r.id for r in reconstructed_list]
+        selected_cand_id = st.selectbox("Select Candidate to Inspect Signals", options=cand_options)
+        selected_recon = next((r for r in reconstructed_list if r.id == selected_cand_id), None)
+
+        if selected_recon:
+            render_integrity_signals(selected_recon)
+
 elif view_mode == "Overview":
     render_overview(st.session_state.current_results)
 elif view_mode == "Ranked Results":
     render_ranked_results(st.session_state.current_results)
 elif view_mode == "File Detail":
-    selected_file = st.session_state.current_results.files[0] if (st.session_state.current_results and st.session_state.current_results.files) else None
+    selected_file = None
+    if st.session_state.reconstructed_files:
+        cand_ids = [r.id for r in st.session_state.reconstructed_files]
+        chosen_id = st.selectbox("Select Candidate File", options=cand_ids)
+        selected_file = next((r for r in st.session_state.reconstructed_files if r.id == chosen_id), None)
+    elif st.session_state.current_results and st.session_state.current_results.files:
+        selected_file = st.session_state.current_results.files[0]
     render_file_detail(selected_file)
     if selected_file:
         render_integrity_signals(selected_file)

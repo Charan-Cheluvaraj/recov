@@ -13,6 +13,7 @@ from recovery.relationship_graph import build_relationship_graph
 from recovery.clustering import cluster_fragments
 from recovery.reconstruction import reconstruct_structured_file
 from recovery.text_reconstruction import reconstruct_small_text_cluster, reconstruct_large_text_cluster
+from intelligence.scoring import score_reconstructed_file
 from .pipeline_context import PipelineContext
 from .pipeline_status import PipelineStatus, PipelineStage
 
@@ -173,11 +174,51 @@ def run_stage_5(
 
     return evidence, fragments, features, graph, clusters, orphans, reconstructed_files
 
+def run_stage_6(
+    evidence_path: str, status_callback: Optional[callable] = None
+) -> Tuple[Evidence, List[Fragment], List[FeatureVector], Dict[str, Any], List[FragmentCluster], List[str], List[ReconstructedFile]]:
+    """
+    Execute Stage 6: Stages 1-5 + Decomposed Integrity Scoring (Four Signals + Composite).
+    
+    Takes Stage 5 reconstructed candidate files, evaluates reconstruction confidence,
+    completeness, structural validity, and corruption estimate, and calculates the
+    composite integrity score for candidate prioritization.
+    
+    Returns:
+        (evidence, fragments, features, relationship_graph, clusters, orphans, reconstructed_files)
+    """
+    evidence, fragments, features, graph, clusters, orphans, reconstructed_files = run_stage_5(
+        evidence_path, status_callback=status_callback
+    )
+
+    status = PipelineStatus()
+    if status_callback:
+        status.update(PipelineStage.FOUR_SIGNAL_SCORING, 0.4, f"Computing decomposed integrity scores for {len(reconstructed_files)} candidates")
+        status_callback(status)
+
+    cluster_map = {c.cluster_id: c for c in clusters}
+    scored_files: List[ReconstructedFile] = []
+
+    for recon in reconstructed_files:
+        cluster = cluster_map.get(recon.cluster_id)
+        scored = score_reconstructed_file(recon, cluster=cluster, fragments=fragments)
+        scored_files.append(scored)
+
+    if status_callback:
+        status.update(
+            PipelineStage.FOUR_SIGNAL_SCORING,
+            1.0,
+            f"Successfully scored {len(scored_files)} candidates with 4-signal decomposed integrity"
+        )
+        status_callback(status)
+
+    return evidence, fragments, features, graph, clusters, orphans, scored_files
+
 def run_pipeline(evidence_path: str, status_callback: Optional[callable] = None) -> RankedResults:
     """
     Main 14-stage Pipeline Orchestrator.
     
-    Stages 6-14 are intentionally deferred; use run_stage_1 .. run_stage_5 for completed stages.
+    Stages 7-14 are intentionally deferred; use run_stage_1 .. run_stage_6 for completed stages.
     """
     context = PipelineContext(evidence_path=evidence_path)
     status = PipelineStatus()
@@ -187,6 +228,6 @@ def run_pipeline(evidence_path: str, status_callback: Optional[callable] = None)
         status_callback(status)
 
     raise NotImplementedError(
-        "Full 14-stage pipeline is deferred in Stage 5. "
-        "Use run_stage_5(evidence_path) for Stage 5 candidate file reconstruction and validation."
+        "Full 14-stage pipeline is deferred in Stage 6. "
+        "Use run_stage_6(evidence_path) for Stage 6 decomposed integrity scoring."
     )

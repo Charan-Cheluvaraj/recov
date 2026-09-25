@@ -4,6 +4,7 @@ from .scoring import (
     calculate_structural_validity,
     calculate_corruption_estimate,
     calculate_composite_integrity,
+    score_reconstructed_file,
 )
 from .priority import calculate_priority_score
 from .pii_detection import detect_pii
@@ -17,6 +18,7 @@ __all__ = [
     "calculate_structural_validity",
     "calculate_corruption_estimate",
     "calculate_composite_integrity",
+    "score_reconstructed_file",
     "calculate_priority_score",
     "detect_pii",
     "detect_keywords",

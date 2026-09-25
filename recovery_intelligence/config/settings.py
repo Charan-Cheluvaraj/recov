@@ -1,4 +1,4 @@
-﻿import os
+import os
 from pathlib import Path
 from pydantic import BaseModel, Field
 
@@ -40,6 +40,12 @@ class Settings(BaseModel):
     DBSCAN_EPS: float = 0.30
     DBSCAN_MIN_SAMPLES: int = 2
     MIN_GRAPH_EDGE_WEIGHT: float = 0.40
+    
+    # Stage 6 Decomposed Integrity Scoring Weights
+    RECONSTRUCTION_CONFIDENCE_WEIGHT: float = 0.25
+    COMPLETENESS_WEIGHT: float = 0.25
+    STRUCTURAL_VALIDITY_WEIGHT: float = 0.35
+    CORRUPTION_WEIGHT: float = 0.15
     
     # AI Models
     EMBEDDING_MODEL_NAME: str = "sentence-transformers/all-MiniLM-L6-v2"
