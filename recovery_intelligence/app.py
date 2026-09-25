@@ -14,6 +14,7 @@ from models.fragment import Fragment
 from models.feature_vector import FeatureVector
 from models.cluster import FragmentCluster
 from models.reconstructed_file import ReconstructedFile
+from models.pipeline_result import PipelineResult
 from visualization import (
     render_overview,
     render_ranked_results,
@@ -21,9 +22,23 @@ from visualization import (
     render_relationship_graph,
     render_integrity_signals,
     render_narrative,
+    render_file_preview,
+    render_recovered_files_view,
+    render_analyst_workspace,
 )
-from storage import load_cached_results
-from pipeline import run_pipeline, run_stage_1, run_stage_2, run_stage_3, run_stage_4, run_stage_5, run_stage_6, run_stage_7, run_stage_8
+from storage import load_cached_results, load_pipeline_cache
+from pipeline import (
+    run_full_pipeline,
+    run_pipeline,
+    run_stage_1,
+    run_stage_2,
+    run_stage_3,
+    run_stage_4,
+    run_stage_5,
+    run_stage_6,
+    run_stage_7,
+    run_stage_8,
+)
 
 st.set_page_config(
     page_title="AI-Assisted Intelligent Data Recovery",
@@ -32,14 +47,28 @@ st.set_page_config(
 )
 
 st.title("AI-Assisted Intelligent Data Recovery & Digital Evidence Reconstruction")
-st.caption("CALMSTACKS 24H HACKATHON Project | Stages 1–8: Ingestion, Carving, Characterization, Fingerprinting, Clustering, Reconstruction, Scoring, Recoverability & Sensitivity Priority Ranking")
+st.caption("CALMSTACKS 24H HACKATHON Project | Full End-to-End Autonomous Pipeline & Forensic Recovery Workspace")
 
 
 # Ensure required directories exist
 settings.EVIDENCE_DIR.mkdir(parents=True, exist_ok=True)
 settings.CACHE_DIR.mkdir(parents=True, exist_ok=True)
+settings.RECOVERED_DIR.mkdir(parents=True, exist_ok=True)
 
 # Session state initialization
+if "active_evidence_sha256" not in st.session_state:
+    st.session_state.active_evidence_sha256 = None
+if "active_pipeline_result" not in st.session_state:
+    st.session_state.active_pipeline_result = None
+if "pipeline_status" not in st.session_state:
+    st.session_state.pipeline_status = "idle"
+if "pipeline_progress" not in st.session_state:
+    st.session_state.pipeline_progress = 0.0
+if "pipeline_error" not in st.session_state:
+    st.session_state.pipeline_error = None
+if "pipeline_completed" not in st.session_state:
+    st.session_state.pipeline_completed = False
+
 if "evidence_record" not in st.session_state:
     st.session_state.evidence_record = None
 if "carved_fragments" not in st.session_state:
@@ -66,6 +95,10 @@ st.sidebar.markdown("---")
 view_mode = st.sidebar.radio(
     "Select Dashboard View",
     [
+        "Analyst Workspace",
+        "Overview",
+        "Recovered Files",
+        "Ranked Results",
         "Stage 1: Carving",
         "Stage 2: Characterization",
         "Stage 3: Fingerprinting",
@@ -74,8 +107,6 @@ view_mode = st.sidebar.radio(
         "Stage 6: Integrity Scoring",
         "Stage 7: Recoverability",
         "Stage 8: Classification & Priority",
-        "Overview",
-        "Ranked Results",
         "File Detail",
         "Relationship Graph",
         "Narrative Report",
@@ -115,32 +146,14 @@ if selected_cache != "None" and st.sidebar.button("Load Cached Run"):
     results = load_cached_results(selected_cache)
     if results:
         st.session_state.current_results = results
+        st.session_state.reconstructed_files = results.files
+        st.session_state.clusters = results.clusters
+        st.session_state.orphans = [f.id for f in results.orphans]
         st.sidebar.success(f"Loaded run '{selected_cache}' successfully!")
     else:
         st.sidebar.error("Failed to load cached run.")
 
 st.sidebar.markdown("---")
-
-# Execution Buttons
-col_btn1, col_btn2 = st.sidebar.columns(2)
-run_stage1_clicked = col_btn1.button("Run Stage 1 Carve", type="primary")
-run_stage2_clicked = col_btn2.button("Run Stage 2 Characterize", type="secondary")
-
-col_btn3, col_btn4 = st.sidebar.columns(2)
-run_stage3_clicked = col_btn3.button("Run Stage 3 Fingerprint")
-run_stage4_clicked = col_btn4.button("Run Stage 4 Relationships")
-
-col_btn5, col_btn6 = st.sidebar.columns(2)
-run_stage5_clicked = col_btn5.button("Run Stage 5 Reconstruct")
-run_stage6_clicked = col_btn6.button("Run Stage 6 Score")
-
-col_btn7, col_btn8 = st.sidebar.columns(2)
-run_stage7_clicked = col_btn7.button("Run Stage 7 Recover")
-run_stage8_clicked = col_btn8.button("Run Stage 8 Classify & Rank", type="primary")
-
-st.sidebar.markdown("")
-run_full_clicked = st.sidebar.button("Run Full Pipeline (Deferred)")
-
 
 # Target Path Resolution
 target_path: Optional[str] = None
@@ -151,6 +164,31 @@ elif uploaded_file is not None:
     with open(dest_path, "wb") as f:
         f.write(uploaded_file.getbuffer())
     target_path = str(dest_path)
+
+# ============================================================
+# PRIMARY ONE-CLICK EXECUTION
+# ============================================================
+st.sidebar.subheader("One-Click Autonomous Recovery")
+force_rerun_toggle = st.sidebar.checkbox("Force Re-analysis (Bypass Cache)", value=False)
+run_full_clicked = st.sidebar.button("🚀 RUN FULL RECOVERY ANALYSIS", type="primary", use_container_width=True)
+
+# Secondary / Advanced Developer Controls in Collapsed Expander
+with st.sidebar.expander("🛠️ Advanced / Developer Stage Controls", expanded=False):
+    col_btn1, col_btn2 = st.columns(2)
+    run_stage1_clicked = col_btn1.button("Run Stage 1 Carve")
+    run_stage2_clicked = col_btn2.button("Run Stage 2 Characterize")
+
+    col_btn3, col_btn4 = st.columns(2)
+    run_stage3_clicked = col_btn3.button("Run Stage 3 Fingerprint")
+    run_stage4_clicked = col_btn4.button("Run Stage 4 Relationships")
+
+    col_btn5, col_btn6 = st.columns(2)
+    run_stage5_clicked = col_btn5.button("Run Stage 5 Reconstruct")
+    run_stage6_clicked = col_btn6.button("Run Stage 6 Score")
+
+    col_btn7, col_btn8 = st.columns(2)
+    run_stage7_clicked = col_btn7.button("Run Stage 7 Recover")
+    run_stage8_clicked = col_btn8.button("Run Stage 8 Classify & Rank")
 
 if run_stage1_clicked:
     if not target_path:
@@ -293,18 +331,60 @@ if run_full_clicked:
     if not target_path:
         st.sidebar.warning("Please select or upload an evidence image first.")
     else:
-        with st.spinner("Executing 14-stage recovery pipeline..."):
-            try:
-                results = run_pipeline(target_path)
-                st.session_state.current_results = results
-                st.success("Pipeline execution complete!")
-            except NotImplementedError as e:
-                st.info(f"Notice: {e}")
-            except Exception as e:
-                st.error(f"Pipeline Error: {e}")
+        progress_bar = st.sidebar.progress(0.0)
+        status_text = st.sidebar.empty()
+
+        def live_status_callback(p_status):
+            pct = max(0.0, min(1.0, float(getattr(p_status, "progress", 0.0))))
+            progress_bar.progress(pct)
+            msg = getattr(p_status, "message", "")
+            stage_name = getattr(getattr(p_status, "stage", None), "value", "Running")
+            status_text.text(f"[{stage_name}] {msg}")
+
+        try:
+            with st.spinner("Executing autonomous end-to-end recovery pipeline..."):
+                result = run_full_pipeline(
+                    target_path,
+                    status_callback=live_status_callback,
+                    force_rerun=force_rerun_toggle,
+                )
+                st.session_state.active_pipeline_result = result
+                st.session_state.active_evidence_sha256 = result.evidence_sha256
+                st.session_state.pipeline_completed = True
+                st.session_state.pipeline_status = "completed"
+                st.session_state.pipeline_progress = 1.0
+                st.session_state.pipeline_error = None
+
+                st.session_state.evidence_record = result.evidence
+                st.session_state.carved_fragments = result.fragments
+                st.session_state.characterized_fragments = result.characterized_fragments
+                st.session_state.feature_vectors = result.feature_vectors
+                st.session_state.relationship_graph = result.relationship_graph
+                st.session_state.clusters = result.clusters
+                st.session_state.orphans = result.orphans
+                st.session_state.reconstructed_files = result.reconstructed_files
+                st.session_state.current_results = result.ranked_results
+
+                progress_bar.progress(1.0)
+                if result.cached:
+                    st.sidebar.success(f"⚡ Loaded cached analysis ({result.evidence_sha256[:12]}...)")
+                else:
+                    st.sidebar.success(f"✅ Recovery complete in {result.total_duration:.2f}s ({len(result.reconstructed_files)} candidates)!")
+        except Exception as e:
+            st.session_state.pipeline_error = str(e)
+            st.session_state.pipeline_status = "failed"
+            st.sidebar.error(f"Pipeline Error: {e}")
 
 # Main Content Render
-if view_mode == "Stage 1: Carving":
+if view_mode == "Analyst Workspace":
+    render_analyst_workspace(st.session_state.active_pipeline_result)
+elif view_mode == "Overview":
+    render_overview(st.session_state.active_pipeline_result or st.session_state.current_results)
+elif view_mode == "Recovered Files":
+    render_recovered_files_view(st.session_state.reconstructed_files)
+elif view_mode == "Ranked Results":
+    render_ranked_results(st.session_state.active_pipeline_result or st.session_state.current_results)
+elif view_mode == "Stage 1: Carving":
     st.header("Stage 1: Evidence Ingestion & Magic-Byte Carving")
     
     evidence: Optional[Evidence] = st.session_state.evidence_record
@@ -414,21 +494,31 @@ elif view_mode == "Stage 2: Characterization":
 
         if selected_frag:
             windows = selected_frag.metadata.get("entropy_windows", [])
-            if windows:
-                chart_data = {
-                    "Byte Offset": [w["start"] for w in windows],
-                    "Window Entropy": [w["entropy"] for w in windows],
-                }
-                import pandas as pd
-                df = pd.DataFrame(chart_data).set_index("Byte Offset")
-                st.line_chart(df, height=250)
+            if windows and len(windows) > 0:
+                offsets = [int(w.get("start", 0)) for w in windows]
+                entropies = [float(w.get("entropy", 0.0)) for w in windows]
+                if len(entropies) > 1 and not all(e is None for e in entropies):
+                    import pandas as pd
+                    chart_data = {
+                        "Byte Offset": offsets,
+                        "Window Entropy": entropies,
+                    }
+                    df = pd.DataFrame(chart_data).set_index("Byte Offset")
+                    if not df.empty and len(df) > 1 and not df["Window Entropy"].isna().all():
+                        st.line_chart(df, height=250)
+                    else:
+                        st.info("No entropy window data available for this candidate.")
+                elif len(entropies) == 1:
+                    st.info(f"Single entropy window: {entropies[0]:.4f} at offset {offsets[0]}. Insufficient points for chart.")
+                else:
+                    st.info("No entropy window data available for this candidate.")
                 st.caption(
                     f"Whole-fragment entropy: **{selected_frag.entropy:.4f}** | "
                     f"Characterization: **{selected_frag.metadata.get('characterization', '-').upper()}** | "
                     f"Printable ratio: **{selected_frag.metadata.get('printable_ratio', 0.0):.3f}**"
                 )
             else:
-                st.info("No sliding-window data available for this fragment.")
+                st.info("No entropy window data available for this candidate.")
 
 elif view_mode == "Stage 3: Fingerprinting":
     st.header("Stage 3: Fragment Fingerprinting (64D Feature Vectors)")
@@ -481,13 +571,21 @@ elif view_mode == "Stage 3: Fingerprinting":
         selected_fv = next((fv for fv in features if fv.fragment_id == selected_id), None)
 
         if selected_fv:
-            import pandas as pd
-            chart_df = pd.DataFrame({
-                "Dimension Index": list(range(1, len(selected_fv.vector) + 1)),
-                "Value": selected_fv.vector,
-            }).set_index("Dimension Index")
+            if selected_fv.vector and len(selected_fv.vector) > 1 and not all(v is None for v in selected_fv.vector):
+                import pandas as pd
+                chart_df = pd.DataFrame({
+                    "Dimension Index": list(range(1, len(selected_fv.vector) + 1)),
+                    "Value": [float(v) for v in selected_fv.vector],
+                }).set_index("Dimension Index")
+                if not chart_df.empty and len(chart_df) > 1 and not chart_df["Value"].isna().all():
+                    st.line_chart(chart_df, height=250)
+                else:
+                    st.info("No vector data available for this candidate.")
+            elif selected_fv.vector and len(selected_fv.vector) == 1:
+                st.info(f"Single vector value: {selected_fv.vector[0]:.4f}. Insufficient points for chart.")
+            else:
+                st.info("No vector data available for this candidate.")
 
-            st.line_chart(chart_df, height=250)
             st.caption(
                 f"Method: `{selected_fv.metadata.get('fingerprint_method', '-')}` | "
                 f"Vector Length: `{len(selected_fv.vector)}` | "
@@ -1010,10 +1108,6 @@ elif view_mode == "Stage 8: Classification & Priority":
             st.markdown("##### Preserved Stage 6 Integrity Signals")
             render_integrity_signals(selected_recon)
 
-elif view_mode == "Overview":
-    render_overview(st.session_state.current_results)
-elif view_mode == "Ranked Results":
-    render_ranked_results(st.session_state.current_results)
 elif view_mode == "File Detail":
     selected_file = None
     if st.session_state.reconstructed_files:

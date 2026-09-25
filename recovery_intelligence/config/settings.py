@@ -14,6 +14,7 @@ class Settings(BaseModel):
     DATASET_DIR: Path = Field(default_factory=lambda: Path(__file__).resolve().parent.parent / "dataset")
     
     # Carving & Fragment Settings
+    PIPELINE_VERSION: str = "1.0.0"
     DEFAULT_FRAGMENT_SIZE: int = 512
     MAX_EVIDENCE_SIZE_MB: int = 1024
     

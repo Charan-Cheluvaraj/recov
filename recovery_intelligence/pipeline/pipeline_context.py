@@ -1,6 +1,15 @@
-﻿from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Optional
-from models import Fragment, FeatureVector, FragmentCluster, ReconstructedFile, Evidence, Narrative, RankedResults
+from models import (
+    Fragment,
+    FeatureVector,
+    FragmentCluster,
+    ReconstructedFile,
+    Evidence,
+    Narrative,
+    RankedResults,
+    PipelineResult,
+)
 
 class PipelineContext(BaseModel):
     """Runtime context object carrying artifacts across all 14 pipeline stages."""

@@ -1,18 +1,130 @@
+import os
 import streamlit as st
-from typing import Optional
+from typing import Optional, Union, Dict, Any, List
 from models.ranked_results import RankedResults
+from models.pipeline_result import PipelineResult
 
-def render_overview(results: Optional[RankedResults] = None) -> None:
-    """Render high-level executive summary metrics and dataset overview."""
+
+def render_overview(results: Optional[Union[PipelineResult, RankedResults]] = None) -> None:
+    """Render high-level executive summary metrics, stage timing breakdown, and dataset overview."""
     st.header("Executive Summary & Overview")
+
     if not results:
-        st.info("No active pipeline results loaded. Upload an evidence image or load cached run.")
-        st.metric(label="Total Fragments Carved", value=0)
-        st.metric(label="Reconstructed Files", value=0)
-        st.metric(label="Average Integrity Score", value="0.0%")
+        st.info("No active pipeline results loaded. Select an evidence image and click 'RUN FULL RECOVERY ANALYSIS'.")
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Fragments Carved", 0)
+        m2.metric("Reconstructed Files", 0)
+        m3.metric("Artifacts Recovered", 0)
+        m4.metric("Average Recovery Ratio", "0.0%")
+        return
+
+    # Check if results is PipelineResult or legacy RankedResults
+    is_full_result = isinstance(results, PipelineResult)
+
+    # 1. Pipeline Status & Evidence Metadata
+    st.subheader("Pipeline Execution Status")
+    s1, s2, s3, s4 = st.columns(4)
+
+    ev_hash = results.evidence_sha256 if is_full_result else (results.evidence_image_hash or "N/A")
+    ev_size = (
+        results.evidence.metadata.get("size_bytes", 0)
+        if (is_full_result and results.evidence)
+        else 0
+    )
+    total_time = results.total_duration if is_full_result else 0.0
+    status_label = ("⚡ Loaded Cached Analysis" if (is_full_result and results.cached) else "✅ Pipeline Complete")
+
+    s1.metric("Status", status_label)
+    s2.metric("Total Duration", f"{total_time:.2f} s")
+    s3.metric("Evidence Size", f"{ev_size:,} B" if ev_size else "—")
+    s4.metric("Evidence Hash", ev_hash[:12] + "..." if len(ev_hash) > 12 else ev_hash)
+
+    st.text_input("Evidence SHA-256 Digest", value=ev_hash, disabled=True)
+
+    st.markdown("---")
+
+    # 2. Comprehensive Pipeline Metrics
+    st.subheader("Recovery Pipeline Metrics")
+    c1, c2, c3, c4 = st.columns(4)
+
+    if is_full_result:
+        frags_carved = len(results.fragments)
+        frags_char = len(results.characterized_fragments)
+        feat_vecs = len(results.feature_vectors)
+        rel_edges = len(results.relationship_graph.get("edges", []))
+        clusters_count = len(results.clusters)
+        orphans_count = len(results.orphans)
+        recon_cands = len(results.reconstructed_files)
+        valid_cands = sum(1 for r in results.reconstructed_files if (r.structural_validity or 0.0) >= 1.0)
+        recov_artifacts = sum(1 for r in results.reconstructed_files if r.output_path and os.path.exists(r.output_path))
+        avg_recov_ratio = (
+            sum(r.observed_recovery_ratio for r in results.reconstructed_files) / max(1, recon_cands)
+        )
+        sensitive_cands = sum(1 for r in results.reconstructed_files if (r.sensitivity_level or "NONE") != "NONE")
+        high_pri_cands = sum(1 for r in results.reconstructed_files if (r.priority_score or 0.0) >= 0.70)
     else:
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Evidence Hash", results.evidence_image_hash[:12] if results.evidence_image_hash else "N/A")
-        col2.metric("Total Files", len(results.files))
-        col3.metric("Clusters", len(results.clusters))
-        col4.metric("Orphan Fragments", len(results.orphans))
+        frags_carved = len(results.orphans)
+        frags_char = frags_carved
+        feat_vecs = 0
+        rel_edges = 0
+        clusters_count = len(results.clusters)
+        orphans_count = len(results.orphans)
+        recon_cands = len(results.files)
+        valid_cands = sum(1 for r in results.files if (r.structural_validity or 0.0) >= 1.0)
+        recov_artifacts = sum(1 for r in results.files if r.output_path and os.path.exists(r.output_path))
+        avg_recov_ratio = (
+            sum(r.observed_recovery_ratio for r in results.files) / max(1, recon_cands)
+        )
+        sensitive_cands = sum(1 for r in results.files if (r.sensitivity_level or "NONE") != "NONE")
+        high_pri_cands = sum(1 for r in results.files if (r.priority_score or 0.0) >= 0.70)
+
+    c1.metric("Fragments Carved", frags_carved)
+    c2.metric("Characterized Fragments", frags_char)
+    c3.metric("Feature Vectors (64D)", feat_vecs)
+    c4.metric("Relationship Edges", rel_edges)
+
+    c5, c6, c7, c8 = st.columns(4)
+    c5.metric("Clusters Formed", clusters_count)
+    c6.metric("Orphan Fragments", orphans_count)
+    c7.metric("Reconstruction Candidates", recon_cands)
+    c8.metric("Structurally Validated", valid_cands)
+
+    c9, c10, c11, c12 = st.columns(4)
+    c9.metric("Recovered Artifacts", recov_artifacts)
+    c10.metric("Avg Observed Recovery", f"{avg_recov_ratio * 100:.1f}%")
+    c11.metric("Sensitive Candidates", sensitive_cands)
+    c12.metric("High-Priority Candidates", high_pri_cands)
+
+    st.markdown("---")
+
+    # 3. Stage Timing & Performance Table
+    if is_full_result and results.stage_durations:
+        st.subheader("Stage Performance Breakdown")
+        stage_names = [
+            ("Stage 1: Evidence Ingestion & Carving", "stage_1_duration", frags_carved),
+            ("Stage 2: Entropy Characterization", "stage_2_duration", frags_char),
+            ("Stage 3: Fragment Fingerprinting", "stage_3_duration", feat_vecs),
+            ("Stage 4: Relationships & Clustering", "stage_4_duration", f"{clusters_count} clusters / {orphans_count} orphans"),
+            ("Stage 5: Candidate Reconstruction", "stage_5_duration", recon_cands),
+            ("Stage 6: Integrity Scoring", "stage_6_duration", recon_cands),
+            ("Stage 7: Recoverability Assessment", "stage_7_duration", f"{recov_artifacts} artifacts"),
+            ("Stage 8: Sensitivity & Priority", "stage_8_duration", f"{recon_cands} ranked"),
+        ]
+
+        perf_rows = []
+        for name, dur_key, count in stage_names:
+            dur = results.stage_durations.get(dur_key, 0.0)
+            pct = (dur / max(0.001, total_time)) * 100.0 if total_time > 0 else 0.0
+            perf_rows.append({
+                "Pipeline Stage": name,
+                "Duration (Seconds)": f"{dur:.4f} s",
+                "Share of Total Time": f"{pct:.1f}%",
+                "Output Count": str(count),
+            })
+
+        st.dataframe(perf_rows, use_container_width=True)
+
+    # 4. Factual Text Summary
+    if is_full_result and results.final_summary:
+        with st.expander("📄 View Factual Forensic Summary Log", expanded=False):
+            st.code(results.final_summary, language="text")

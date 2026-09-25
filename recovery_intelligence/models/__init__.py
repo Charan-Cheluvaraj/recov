@@ -7,6 +7,7 @@ from .evidence import Evidence
 from .narrative import Narrative
 from .recoverability import RecoveryStatus, RecoverabilityAssessment
 from .sensitivity import SensitivityLevel, SensitivityMatch, SensitivityAssessment
+from .pipeline_result import PipelineResult
 
 __all__ = [
     "Fragment",
@@ -21,6 +22,7 @@ __all__ = [
     "SensitivityLevel",
     "SensitivityMatch",
     "SensitivityAssessment",
+    "PipelineResult",
 ]
 
 
