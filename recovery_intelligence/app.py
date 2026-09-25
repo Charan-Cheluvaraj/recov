@@ -1,4 +1,4 @@
-﻿import streamlit as st
+import streamlit as st
 import sys
 from pathlib import Path
 from typing import Optional, List, Dict, Any
@@ -13,6 +13,7 @@ from models.evidence import Evidence
 from models.fragment import Fragment
 from models.feature_vector import FeatureVector
 from models.cluster import FragmentCluster
+from models.reconstructed_file import ReconstructedFile
 from visualization import (
     render_overview,
     render_ranked_results,
@@ -22,7 +23,7 @@ from visualization import (
     render_narrative,
 )
 from storage import load_cached_results
-from pipeline import run_pipeline, run_stage_1, run_stage_2, run_stage_3, run_stage_4
+from pipeline import run_pipeline, run_stage_1, run_stage_2, run_stage_3, run_stage_4, run_stage_5
 
 st.set_page_config(
     page_title="AI-Assisted Intelligent Data Recovery",
@@ -52,6 +53,8 @@ if "clusters" not in st.session_state:
     st.session_state.clusters = []
 if "orphans" not in st.session_state:
     st.session_state.orphans = []
+if "reconstructed_files" not in st.session_state:
+    st.session_state.reconstructed_files = []
 if "current_results" not in st.session_state:
     st.session_state.current_results = None
 
@@ -66,6 +69,7 @@ view_mode = st.sidebar.radio(
         "Stage 2: Characterization",
         "Stage 3: Fingerprinting",
         "Stage 4: Relationships & Clusters",
+        "Stage 5: Reconstruction",
         "Overview",
         "Ranked Results",
         "File Detail",
@@ -121,6 +125,8 @@ run_stage2_clicked = col_btn2.button("Run Stage 2 Characterize", type="secondary
 col_btn3, col_btn4 = st.sidebar.columns(2)
 run_stage3_clicked = col_btn3.button("Run Stage 3 Fingerprint")
 run_stage4_clicked = col_btn4.button("Run Stage 4 Relationships")
+
+run_stage5_clicked = st.sidebar.button("Run Stage 5 Reconstruction", type="primary")
 
 st.sidebar.markdown("")
 run_full_clicked = st.sidebar.button("Run Full Pipeline (Deferred)")
@@ -194,6 +200,25 @@ if run_stage4_clicked:
                 st.sidebar.success(f"Found {len(graph.get('edges', []))} relationships, {len(clusters)} clusters, {len(orphans)} orphans!")
         except Exception as e:
             st.sidebar.error(f"Stage 4 Analysis Error: {e}")
+
+if run_stage5_clicked:
+    if not target_path:
+        st.sidebar.warning("Please select or upload an evidence image first.")
+    else:
+        try:
+            with st.spinner("Running Stage 5: file reconstruction and structural validation..."):
+                evidence, characterized, features, graph, clusters, orphans, reconstructed = run_stage_5(target_path)
+                st.session_state.evidence_record = evidence
+                st.session_state.carved_fragments = characterized
+                st.session_state.characterized_fragments = characterized
+                st.session_state.feature_vectors = features
+                st.session_state.relationship_graph = graph
+                st.session_state.clusters = clusters
+                st.session_state.orphans = orphans
+                st.session_state.reconstructed_files = reconstructed
+                st.sidebar.success(f"Reconstructed and validated {len(reconstructed)} candidate files!")
+        except Exception as e:
+            st.sidebar.error(f"Stage 5 Reconstruction Error: {e}")
 
 if run_full_clicked:
     if not target_path:
@@ -491,6 +516,106 @@ elif view_mode == "Stage 4: Relationships & Clusters":
 
         st.markdown("---")
         render_relationship_graph(graph)
+
+elif view_mode == "Stage 5: Reconstruction":
+    st.header("Stage 5: Candidate File Reconstruction & Structural Validation")
+    st.caption("Assembly of cluster fragments by deterministic offset order and real parser validation (Pillow, pypdf/PyPDF2, python-docx, zipfile, sqlite3).")
+
+    reconstructed_list: List[ReconstructedFile] = st.session_state.reconstructed_files
+    clusters_list = st.session_state.clusters
+
+    if not reconstructed_list:
+        st.info("No reconstruction results available. Select or upload an evidence image and click 'Run Stage 5 Reconstruction' from the sidebar.")
+    else:
+        # Summary Metrics
+        st.subheader("Reconstruction & Validation Summary")
+        m1, m2, m3, m4, m5 = st.columns(5)
+        m1.metric("Candidate Clusters", len(clusters_list))
+        m2.metric("Reconstruction Attempts", len(reconstructed_list))
+
+        success_count = sum(1 for r in reconstructed_list if r.status == "reconstructed")
+        failed_count = sum(1 for r in reconstructed_list if r.status == "validation_failed")
+        ambiguous_count = sum(1 for r in reconstructed_list if r.ambiguous or r.status == "ambiguous")
+
+        m3.metric("Successfully Validated", success_count)
+        m4.metric("Validation Failed", failed_count)
+        m5.metric("Ambiguous", ambiguous_count)
+
+        st.markdown("---")
+        st.subheader("Reconstruction Candidates")
+
+        # Table
+        recon_rows = []
+        for r in reconstructed_list:
+            recon_rows.append({
+                "Candidate ID": r.id,
+                "Cluster": r.cluster_id,
+                "File Type": r.file_type.upper(),
+                "Fragments": len(r.fragment_ids),
+                "Status": r.status.upper(),
+                "Structural Validity": f"{r.structural_validity:.1f}",
+                "Parser Message": r.parser_message,
+            })
+        st.dataframe(recon_rows, use_container_width=True)
+
+        st.markdown("---")
+        st.subheader("Candidate Detail Inspector")
+
+        cand_options = [r.id for r in reconstructed_list]
+        selected_cand_id = st.selectbox("Select Candidate to Inspect", options=cand_options)
+
+        selected_recon = next((r for r in reconstructed_list if r.id == selected_cand_id), None)
+        if selected_recon:
+            col_d1, col_d2 = st.columns(2)
+            with col_d1:
+                st.markdown(f"**Cluster ID:** `{selected_recon.cluster_id}`")
+                st.markdown(f"**Inferred File Type:** `{selected_recon.file_type}`")
+                st.markdown(f"**Status:** `{selected_recon.status}`")
+                st.markdown(f"**Structural Validity:** `{selected_recon.structural_validity}`")
+                st.markdown(f"**Ordered Fragment IDs:** {', '.join(f'`{fid}`' for fid in selected_recon.fragment_ids) if selected_recon.fragment_ids else 'None'}")
+
+            with col_d2:
+                # Find candidate file on disk
+                ext = ".jpg" if selected_recon.file_type == "jpeg" else (f".{selected_recon.file_type}" if selected_recon.file_type != "unknown" else ".bin")
+                cand_path = settings.RECOVERED_DIR / f"{selected_recon.id}{ext}"
+                if not cand_path.exists():
+                    cand_path = settings.RECOVERED_DIR / f"{selected_recon.id}.bin"
+
+                st.markdown(f"**Candidate File Path:** `{cand_path}`")
+                st.markdown(f"**File Exists on Disk:** `{cand_path.exists()}`")
+                st.markdown(f"**Parser Result / Message:** {selected_recon.parser_message}")
+
+                if cand_path.exists():
+                    try:
+                        with open(cand_path, "rb") as cf:
+                            file_bytes = cf.read()
+                        st.download_button(
+                            label=f"Download {cand_path.name} ({len(file_bytes):,} B)",
+                            data=file_bytes,
+                            file_name=cand_path.name,
+                            mime="application/octet-stream",
+                        )
+                    except Exception:
+                        pass
+
+            st.markdown("##### Gap Information")
+            gap_info = selected_recon.gap_information
+            if not gap_info or not gap_info.get("has_gaps"):
+                st.success("No gaps detected between fragments. Fragments form a continuous sequence.")
+            else:
+                st.warning(f"Detected {gap_info.get('gap_count', 0)} non-contiguous gap(s) totaling {gap_info.get('total_gap_bytes', 0):,} missing bytes.")
+                gaps = gap_info.get("gaps", [])
+                if gaps:
+                    gap_rows = [
+                        {
+                            "From Fragment": g.get("prev_fragment_id"),
+                            "To Fragment": g.get("next_fragment_id"),
+                            "Gap Offset Start": f"{g.get('gap_start')} (0x{g.get('gap_start', 0):08X})",
+                            "Gap Length": f"{g.get('gap_length')} B",
+                        }
+                        for g in gaps
+                    ]
+                    st.dataframe(gap_rows, use_container_width=True)
 
 elif view_mode == "Overview":
     render_overview(st.session_state.current_results)

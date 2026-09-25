@@ -1,25 +1,244 @@
+import io
+import os
+import tempfile
+import zipfile
+import sqlite3
 from typing import Tuple
+from PIL import Image
+
+try:
+    import pypdf as pdf_lib
+    PDF_PARSER_NAME = "pypdf"
+except ImportError:
+    try:
+        import PyPDF2 as pdf_lib
+        PDF_PARSER_NAME = "PyPDF2"
+    except ImportError:
+        pdf_lib = None
+        PDF_PARSER_NAME = "none"
+
+try:
+    import docx
+    DOCX_PARSER_NAME = "python-docx"
+except ImportError:
+    docx = None
+    DOCX_PARSER_NAME = "none"
+
 
 def validate_jpeg(data: bytes) -> Tuple[bool, str]:
-    """Validate JPEG image magic headers/footers and Pillow decode integrity."""
-    raise NotImplementedError("validate_jpeg is deferred in Prompt 1.")
+    """
+    Validate JPEG image structure using Pillow real parser.
+    
+    Checks for SOI marker, Pillow opening, format confirmation,
+    and raster data verification.
+    """
+    if not data:
+        return False, "Candidate byte buffer is empty"
+    if not data.startswith(b"\xff\xd8"):
+        return False, "Missing JPEG SOI marker (0xFFD8)"
+    
+    try:
+        # First verify container and header structure
+        img = Image.open(io.BytesIO(data))
+        if img.format != "JPEG":
+            return False, f"Pillow detected format '{img.format}', expected 'JPEG'"
+        img.verify()
+        
+        # Second pass: ensure raster data can be loaded without decode crash
+        img_load = Image.open(io.BytesIO(data))
+        img_load.load()
+        width, height = img_load.size
+        mode = img_load.mode
+        return True, f"Valid JPEG image ({width}x{height}, mode {mode}, Pillow parser)"
+    except Exception as e:
+        return False, f"Pillow JPEG validation failed: {str(e)}"
+
 
 def validate_pdf(data: bytes) -> Tuple[bool, str]:
-    """Validate PDF header/xref/trailer structure using pypdf."""
-    raise NotImplementedError("validate_pdf is deferred in Prompt 1.")
+    """
+    Validate PDF document structure using pypdf / PyPDF2 real parser.
+    
+    Checks %PDF header, object hierarchy, cross-reference table, and page tree.
+    """
+    if not data:
+        return False, "Candidate byte buffer is empty"
+    if not data.startswith(b"%PDF-"):
+        return False, "Missing %PDF magic header"
+    
+    if pdf_lib is None:
+        return False, "No PDF parser library available (pypdf or PyPDF2 required)"
+    
+    try:
+        reader = pdf_lib.PdfReader(io.BytesIO(data))
+        num_pages = len(reader.pages)
+        if num_pages < 1:
+            return False, f"PDF parsed with {PDF_PARSER_NAME} but contains 0 pages"
+        return True, f"Valid PDF document with {num_pages} page(s) ({PDF_PARSER_NAME})"
+    except Exception as e:
+        return False, f"PDF validation failed ({PDF_PARSER_NAME}): {str(e)}"
+
 
 def validate_docx(data: bytes) -> Tuple[bool, str]:
-    """Validate DOCX zip archive and document.xml structure."""
-    raise NotImplementedError("validate_docx is deferred in Prompt 1.")
+    """
+    Validate DOCX document structure using zipfile and python-docx real parser.
+    
+    Verifies valid ZIP container, presence of WordprocessingML structural
+    files, and python-docx Document object model instantiation.
+    """
+    if not data:
+        return False, "Candidate byte buffer is empty"
+    if not data.startswith(b"PK\x03\x04"):
+        return False, "Missing ZIP magic header for DOCX container"
+    
+    # Phase 1: verify ZIP container integrity
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as zf:
+            bad_crc = zf.testzip()
+            if bad_crc is not None:
+                return False, f"DOCX container ZIP CRC check failed on member: {bad_crc}"
+            namelist = zf.namelist()
+            if "[Content_Types].xml" not in namelist:
+                return False, "DOCX missing required '[Content_Types].xml' manifest"
+            if "word/document.xml" not in namelist:
+                return False, "DOCX missing required 'word/document.xml' body"
+    except zipfile.BadZipFile as e:
+        return False, f"DOCX container is not a valid ZIP archive: {str(e)}"
+    except Exception as e:
+        return False, f"DOCX ZIP container check failed: {str(e)}"
+    
+    # Phase 2: verify WordprocessingML with python-docx
+    if docx is None:
+        return False, "python-docx library not installed"
+    
+    try:
+        doc = docx.Document(io.BytesIO(data))
+        para_count = len(doc.paragraphs)
+        table_count = len(doc.tables)
+        return True, f"Valid DOCX document ({para_count} paragraphs, {table_count} tables, {DOCX_PARSER_NAME})"
+    except Exception as e:
+        return False, f"python-docx Document validation failed: {str(e)}"
+
 
 def validate_zip(data: bytes) -> Tuple[bool, str]:
-    """Validate ZIP central directory and CRC checksums."""
-    raise NotImplementedError("validate_zip is deferred in Prompt 1.")
+    """
+    Validate ZIP archive structure and CRC checksums using zipfile.ZipFile.
+    """
+    if not data:
+        return False, "Candidate byte buffer is empty"
+    if not data.startswith(b"PK\x03\x04"):
+        return False, "Missing ZIP magic header (PK\x03\x04)"
+    
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as zf:
+            bad_entry = zf.testzip()
+            if bad_entry is not None:
+                return False, f"ZIP archive CRC checksum failed on entry: {bad_entry}"
+            namelist = zf.namelist()
+            return True, f"Valid ZIP archive with {len(namelist)} member(s) (zipfile parser)"
+    except zipfile.BadZipFile as e:
+        return False, f"ZIP validation failed: Corrupted archive or bad central directory ({str(e)})"
+    except Exception as e:
+        return False, f"ZIP validation failed: {str(e)}"
+
 
 def validate_sqlite(data: bytes) -> Tuple[bool, str]:
-    """Validate SQLite database header magic and page structure."""
-    raise NotImplementedError("validate_sqlite is deferred in Prompt 1.")
+    """
+    Validate SQLite database file using sqlite3 and PRAGMA integrity_check.
+    
+    Writes candidate bytes to a temporary path, executes integrity_check,
+    and cleans up safely without modifying original evidence.
+    """
+    if not data:
+        return False, "Candidate byte buffer is empty"
+    if not data.startswith(b"SQLite format 3\x00"):
+        return False, "Missing SQLite magic header (SQLite format 3\\x00)"
+    
+    temp_path = None
+    conn = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False) as tf:
+            tf.write(data)
+            temp_path = tf.name
+        
+        conn = sqlite3.connect(temp_path)
+        cur = conn.cursor()
+        cur.execute("PRAGMA integrity_check;")
+        rows = cur.fetchall()
+        
+        if rows and len(rows) == 1 and rows[0][0] == "ok":
+            return True, "Valid SQLite database (PRAGMA integrity_check: ok)"
+        elif rows:
+            errors = "; ".join(str(r[0]) for r in rows[:3])
+            return False, f"SQLite integrity check reported errors: {errors}"
+        else:
+            return False, "SQLite integrity check returned no results"
+    except sqlite3.DatabaseError as e:
+        return False, f"SQLite validation failed: DatabaseError ({str(e)})"
+    except Exception as e:
+        return False, f"SQLite validation failed: {str(e)}"
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        if temp_path and os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except Exception:
+                pass
+
+
+def validate_text(data: bytes) -> Tuple[bool, str]:
+    """
+    Validate text candidate data: UTF-8 / Latin-1 decodability and printable character ratio.
+    """
+    if not data:
+        return False, "Candidate byte buffer is empty"
+    
+    decoded = None
+    encoding_used = "utf-8"
+    try:
+        decoded = data.decode("utf-8")
+    except UnicodeDecodeError:
+        try:
+            decoded = data.decode("latin-1")
+            encoding_used = "latin-1"
+        except Exception as e:
+            return False, f"Text decoding failed: {str(e)}"
+    
+    if not decoded:
+        return False, "Decoded text is empty"
+    
+    printable_chars = sum(1 for c in decoded if c.isprintable() or c in "\r\n\t")
+    ratio = printable_chars / max(1, len(decoded))
+    if ratio < 0.70:
+        return False, f"Text printable ratio ({ratio:.2f}) below threshold 0.70"
+    
+    return True, f"Valid text data ({len(decoded)} chars, {encoding_used}, printable ratio {ratio:.2f})"
+
 
 def validate_reconstruction(file_type: str, data: bytes) -> Tuple[bool, str]:
-    """Dispatch structural validation based on file extension/type."""
-    raise NotImplementedError("validate_reconstruction is deferred in Prompt 1.")
+    """
+    Dispatch structural validation based on file type.
+    
+    Supported types: jpeg, pdf, docx, zip, sqlite, text.
+    """
+    if not data:
+        return False, "Candidate byte buffer is empty"
+    
+    ft = (file_type or "").lower().strip().lstrip(".")
+    if ft in ("jpeg", "jpg"):
+        return validate_jpeg(data)
+    elif ft == "pdf":
+        return validate_pdf(data)
+    elif ft == "docx":
+        return validate_docx(data)
+    elif ft == "zip":
+        return validate_zip(data)
+    elif ft in ("sqlite", "sqlite3", "db"):
+        return validate_sqlite(data)
+    elif ft in ("text", "txt"):
+        return validate_text(data)
+    else:
+        return False, f"Unsupported file type for structural validation: '{file_type}'"
