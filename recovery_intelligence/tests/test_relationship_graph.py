@@ -100,7 +100,22 @@ def test_type_compatibility_signals():
     f_jpeg2 = Fragment(id="j2", offset=1000, length=512, type_hint="jpeg")
     f_pdf = Fragment(id="p1", offset=2000, length=512, type_hint="pdf")
 
-    # Identical types get 1.0
     assert calculate_type_compatibility(f_jpeg1, f_jpeg2) == 1.0
-    # Incompatible distinct types get 0.0
     assert calculate_type_compatibility(f_jpeg1, f_pdf) == 0.0
+
+
+# 13. Offset proximity behavior (closer fragments have higher proximity)
+def test_offset_proximity_behavior():
+    f_base = Fragment(id="f0", offset=0, length=512, source="evidence.dd")
+    f_near = Fragment(id="f1", offset=512, length=512, source="evidence.dd")      # 0 gap
+    f_far = Fragment(id="f2", offset=100000, length=512, source="evidence.dd")    # large gap
+    f_diff_src = Fragment(id="f3", offset=512, length=512, source="other.dd")
+
+    prox_near = calculate_offset_proximity(f_base, f_near)
+    prox_far = calculate_offset_proximity(f_base, f_far)
+    prox_diff = calculate_offset_proximity(f_base, f_diff_src)
+
+    assert prox_near == 1.0
+    assert prox_near > prox_far
+    assert prox_far > 0.0
+    assert prox_diff == 0.0
