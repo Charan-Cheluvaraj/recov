@@ -23,7 +23,7 @@ from visualization import (
     render_narrative,
 )
 from storage import load_cached_results
-from pipeline import run_pipeline, run_stage_1, run_stage_2, run_stage_3, run_stage_4, run_stage_5, run_stage_6
+from pipeline import run_pipeline, run_stage_1, run_stage_2, run_stage_3, run_stage_4, run_stage_5, run_stage_6, run_stage_7
 
 st.set_page_config(
     page_title="AI-Assisted Intelligent Data Recovery",
@@ -32,7 +32,8 @@ st.set_page_config(
 )
 
 st.title("AI-Assisted Intelligent Data Recovery & Digital Evidence Reconstruction")
-st.caption("CALMSTACKS 24H HACKATHON Project | Stage 1 + Stage 2 + Stage 3 + Stage 4 + Stage 5 + Stage 6: Carving, Characterization, Fingerprinting, Clustering, Reconstruction & Decomposed Integrity Scoring")
+st.caption("CALMSTACKS 24H HACKATHON Project | Stages 1–7: Ingestion, Carving, Characterization, Fingerprinting, Clustering, Reconstruction, Scoring & Real Recoverability Assessment")
+
 
 # Ensure required directories exist
 settings.EVIDENCE_DIR.mkdir(parents=True, exist_ok=True)
@@ -71,6 +72,7 @@ view_mode = st.sidebar.radio(
         "Stage 4: Relationships & Clusters",
         "Stage 5: Reconstruction",
         "Stage 6: Integrity Scoring",
+        "Stage 7: Recoverability",
         "Overview",
         "Ranked Results",
         "File Detail",
@@ -129,10 +131,14 @@ run_stage4_clicked = col_btn4.button("Run Stage 4 Relationships")
 
 col_btn5, col_btn6 = st.sidebar.columns(2)
 run_stage5_clicked = col_btn5.button("Run Stage 5 Reconstruct")
-run_stage6_clicked = col_btn6.button("Run Stage 6 Score", type="primary")
+run_stage6_clicked = col_btn6.button("Run Stage 6 Score")
+
+col_btn7, col_btn8 = st.sidebar.columns(2)
+run_stage7_clicked = col_btn7.button("Run Stage 7 Recover", type="primary")
 
 st.sidebar.markdown("")
 run_full_clicked = st.sidebar.button("Run Full Pipeline (Deferred)")
+
 
 # Target Path Resolution
 target_path: Optional[str] = None
@@ -241,6 +247,26 @@ if run_stage6_clicked:
                 st.sidebar.success(f"Evaluated decomposed integrity scores for {len(scored_files)} candidates!")
         except Exception as e:
             st.sidebar.error(f"Stage 6 Scoring Error: {e}")
+
+if run_stage7_clicked:
+    if not target_path:
+        st.sidebar.warning("Please select or upload an evidence image first.")
+    else:
+        try:
+            with st.spinner("Running Stage 7: recoverability assessment & candidate artifact generation..."):
+                evidence, characterized, features, graph, clusters, orphans, assessed_files = run_stage_7(target_path)
+                st.session_state.evidence_record = evidence
+                st.session_state.carved_fragments = characterized
+                st.session_state.characterized_fragments = characterized
+                st.session_state.feature_vectors = features
+                st.session_state.relationship_graph = graph
+                st.session_state.clusters = clusters
+                st.session_state.orphans = orphans
+                st.session_state.reconstructed_files = assessed_files
+                st.sidebar.success(f"Assessed recoverability for {len(assessed_files)} candidates & generated artifacts!")
+        except Exception as e:
+            st.sidebar.error(f"Stage 7 Recoverability Error: {e}")
+
 
 if run_full_clicked:
     if not target_path:
@@ -691,6 +717,142 @@ elif view_mode == "Stage 6: Integrity Scoring":
 
         if selected_recon:
             render_integrity_signals(selected_recon)
+
+elif view_mode == "Stage 7: Recoverability":
+    st.header("Stage 7: Real Recoverability Assessment & Disrupted-File Reconstruction")
+    st.caption("Factual quantification of surviving fragment bytes vs missing/unknown gaps, deterministic recovery status, and disk artifact generation.")
+
+    reconstructed_list: List[ReconstructedFile] = st.session_state.reconstructed_files
+
+    if not reconstructed_list:
+        st.info("No recoverability assessment performed yet. Select or upload an evidence image and click 'Run Stage 7 Recover' from the sidebar.")
+    else:
+        # 1. Summary Metrics
+        st.subheader("Recoverability Status Breakdown")
+        
+        c_tot = len(reconstructed_list)
+        c_full = sum(1 for r in reconstructed_list if r.recovery_status == "FULLY_RECONSTRUCTED")
+        c_partial = sum(1 for r in reconstructed_list if r.recovery_status == "PARTIALLY_RECONSTRUCTED")
+        c_struct_partial = sum(1 for r in reconstructed_list if r.recovery_status == "STRUCTURALLY_VALID_PARTIAL")
+        c_invalid = sum(1 for r in reconstructed_list if r.recovery_status == "STRUCTURALLY_INVALID")
+        c_ambig = sum(1 for r in reconstructed_list if r.recovery_status == "AMBIGUOUS")
+        c_unrec = sum(1 for r in reconstructed_list if r.recovery_status == "UNRECOVERABLE")
+
+        m1, m2, m3, m4, m5, m6, m7 = st.columns(7)
+        m1.metric("Candidates", c_tot)
+        m2.metric("Fully Recon", c_full)
+        m3.metric("Partial Recon", c_partial)
+        m4.metric("Struct Valid Partial", c_struct_partial)
+        m5.metric("Invalid", c_invalid)
+        m6.metric("Ambiguous", c_ambig)
+        m7.metric("Unrecoverable", c_unrec)
+
+        st.markdown("---")
+
+        # 2. Metric Definition Notice
+        st.info(
+            "📌 **Observed Recovery Ratio**: Recovered bytes relative to the observed candidate span; "
+            "this is not the original-file recovery percentage."
+        )
+
+        # 3. Candidates Recoverability Table
+        st.subheader("Candidate Recoverability Table")
+
+        recov_table = [
+            {
+                "Candidate ID": r.candidate_id or r.id,
+                "File Type": r.file_type.upper(),
+                "Fragments Used": r.fragment_count or len(r.fragment_ids),
+                "Recovered Bytes": f"{r.recovered_bytes:,} B",
+                "Missing/Unknown Bytes": f"{r.missing_or_unknown_bytes:,} B",
+                "Observed Candidate Span": f"{r.observed_candidate_span:,} B",
+                "Observed Recovery Ratio": f"{r.observed_recovery_ratio * 100:.1f}% ({r.observed_recovery_ratio:.4f})",
+                "Reconstruction Confidence": f"{r.reconstruction_confidence * 100:.1f}%",
+                "Completeness": f"{r.completeness * 100:.1f}%",
+                "Structural Validity": f"{r.structural_validity * 100:.1f}%",
+                "Corruption Estimate": f"{r.corruption_estimate * 100:.1f}%",
+                "Composite Integrity": f"{r.composite_integrity_score * 100:.1f}%",
+                "Recovery Status": r.recovery_status,
+                "Output SHA-256": r.output_sha256 if r.output_sha256 else "—",
+                "Output File Path": r.output_path if r.output_path else "—",
+            }
+            for r in reconstructed_list
+        ]
+        st.dataframe(recov_table, use_container_width=True)
+
+        st.markdown("---")
+
+        # 4. Detailed Candidate Inspector & Artifact Download
+        st.subheader("Recovered Candidate Inspection & Download")
+
+        cand_options = [r.candidate_id or r.id for r in reconstructed_list]
+        selected_cand_id = st.selectbox("Select Candidate to Inspect & Download", options=cand_options)
+        selected_recon = next((r for r in reconstructed_list if (r.candidate_id or r.id) == selected_cand_id), None)
+
+        if selected_recon:
+            col_left, col_right = st.columns([3, 2])
+
+            with col_left:
+                st.markdown("##### Machine-Generated Recovery Summary")
+                st.info(selected_recon.recovery_reason if selected_recon.recovery_reason else "No summary available.")
+
+                st.markdown("##### Recoverability Details")
+                d_c1, d_c2, d_c3 = st.columns(3)
+                d_c1.metric("Recovered Bytes", f"{selected_recon.recovered_bytes:,} B")
+                d_c2.metric("Missing/Unknown Bytes", f"{selected_recon.missing_or_unknown_bytes:,} B")
+                d_c3.metric("Observed Span", f"{selected_recon.observed_candidate_span:,} B")
+
+                st.markdown(f"**Observed Recovery Ratio:** `{selected_recon.observed_recovery_ratio * 100:.2f}%` ({selected_recon.observed_recovery_ratio:.4f})")
+                st.markdown(f"**Recovery Status:** `{selected_recon.recovery_status}`")
+                st.markdown(f"**Structural Validity:** `{selected_recon.structural_validity * 100:.1f}%`")
+                st.markdown(f"**Parser Result / Diagnostic:** {selected_recon.parser_message if selected_recon.parser_message else 'None'}")
+
+            with col_right:
+                st.markdown("##### Recovered Artifact File")
+                cand_path = Path(selected_recon.output_path) if selected_recon.output_path else None
+                file_exists = cand_path.exists() if cand_path else False
+
+                st.markdown(f"**Artifact Path:** `{cand_path}`")
+                st.markdown(f"**Artifact Exists on Disk:** `{file_exists}`")
+                st.markdown(f"**SHA-256 Digest:** `{selected_recon.output_sha256 if selected_recon.output_sha256 else 'N/A'}`")
+
+                if file_exists:
+                    try:
+                        with open(cand_path, "rb") as af:
+                            artifact_data = af.read()
+                        
+                        st.metric("Artifact Size", f"{len(artifact_data):,} Bytes")
+                        st.download_button(
+                            label=f"⬇️ Download {cand_path.name} ({len(artifact_data):,} B)",
+                            data=artifact_data,
+                            file_name=cand_path.name,
+                            mime="application/octet-stream",
+                            type="primary",
+                        )
+                    except Exception as e:
+                        st.error(f"Error reading artifact for download: {e}")
+                else:
+                    st.warning("No artifact file written on disk for this candidate.")
+
+            # Gap Details
+            st.markdown("##### Fragment & Gap Sequence")
+            gap_info = selected_recon.gap_information
+            if not gap_info or not gap_info.get("has_gaps"):
+                st.success("No internal gaps between associated fragments.")
+            else:
+                st.warning(f"Contains {gap_info.get('gap_count', 0)} gap(s) totaling {gap_info.get('total_gap_bytes', 0):,} missing bytes.")
+                gaps = gap_info.get("gaps", [])
+                if gaps:
+                    gap_rows = [
+                        {
+                            "From Fragment": g.get("prev_fragment_id"),
+                            "To Fragment": g.get("next_fragment_id"),
+                            "Gap Offset Start": f"{g.get('gap_start')} (0x{g.get('gap_start', 0):08X})",
+                            "Gap Length": f"{g.get('gap_length')} B",
+                        }
+                        for g in gaps
+                    ]
+                    st.dataframe(gap_rows, use_container_width=True)
 
 elif view_mode == "Overview":
     render_overview(st.session_state.current_results)

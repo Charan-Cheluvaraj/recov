@@ -1,4 +1,4 @@
-﻿from collections import Counter
+from collections import Counter
 from typing import List, Dict, Any, Optional, Tuple
 import numpy as np
 
@@ -87,6 +87,16 @@ def cluster_fragments(
         for j in range(i + 1, n):
             sim = calculate_cosine_similarity(features[i].vector, features[j].vector)
             dist = max(0.0, 1.0 - max(0.0, sim))
+
+            # Group linkage for disrupted file continuation fragments
+            if fragments and features[i].fragment_id in frag_map and features[j].fragment_id in frag_map:
+                fa = frag_map[features[i].fragment_id]
+                fb = frag_map[features[j].fragment_id]
+                grp_a = fa.metadata.get("group_id")
+                grp_b = fb.metadata.get("group_id")
+                if grp_a and grp_b and grp_a == grp_b:
+                    dist = 0.05
+
             dist_matrix[i, j] = dist
             dist_matrix[j, i] = dist
 

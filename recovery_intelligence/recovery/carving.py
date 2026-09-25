@@ -62,17 +62,18 @@ def _calculate_sqlite_candidate_length(data: Union[bytes, mmap.mmap], h_pos: int
         pass
     return min(4096, total_size - h_pos)
 
-def _determine_fragment_boundary(
+def _carve_candidates_for_header(
     data: Union[bytes, mmap.mmap],
     sig: SignatureDefinition,
     h_pos: int,
     total_size: int,
-) -> tuple[int, bool, Dict[str, Any]]:
+) -> List[Dict[str, Any]]:
     """
-    Determine the end boundary, footer flag, and metadata for a candidate signature match.
+    Determine fragment boundaries for a candidate signature match.
     
-    Returns:
-        (length, footer_flag, metadata)
+    If the file is disrupted across an unallocated gap (>=64 null bytes) before its footer,
+    carves the surviving header fragment and continuation fragment(s) as distinct fragments
+    sharing a candidate group ID.
     """
     meta: Dict[str, Any] = {
         "signature": sig.header.hex(),
@@ -82,7 +83,14 @@ def _determine_fragment_boundary(
     if sig.type_hint == "sqlite":
         length = _calculate_sqlite_candidate_length(data, h_pos, total_size)
         meta["has_footer"] = False
-        return length, False, meta
+        return [{
+            "offset": h_pos,
+            "length": length,
+            "type_hint": sig.type_hint,
+            "header_flag": True,
+            "footer_flag": False,
+            "metadata": meta,
+        }]
 
     # For formats with footers (JPEG, PDF, ZIP)
     if sig.footer is not None:
@@ -94,24 +102,90 @@ def _determine_fragment_boundary(
             
             # Format-specific footer adjustments
             if sig.type_hint == "pdf":
-                # Include trailing carriage return / newline if present
                 while end_pos < total_size and data[end_pos:end_pos + 1] in (b"\r", b"\n"):
                     end_pos += 1
             elif sig.type_hint == "zip":
-                # ZIP End of Central Directory (EOCD) record is 22 bytes + comment length
                 if f_pos + 22 <= total_size:
                     comment_len = int.from_bytes(data[f_pos + 20:f_pos + 22], "little")
                     end_pos = min(total_size, f_pos + 22 + comment_len)
             
+            # Check for unallocated / zero gaps between surviving regions
+            null_marker = b"\x00" * 64
+            first_gap = data.find(null_marker, h_pos, end_pos)
+            if first_gap != -1 and first_gap > h_pos:
+                spans = []
+                curr = h_pos
+                while curr < end_pos:
+                    gap_idx = data.find(null_marker, curr, end_pos)
+                    if gap_idx == -1:
+                        spans.append((curr, end_pos))
+                        break
+                    if gap_idx > curr:
+                        spans.append((curr, gap_idx))
+                    skip = gap_idx
+                    while skip < end_pos and data[skip:skip + 1] == b"\x00":
+                        skip += 1
+                    curr = skip
+
+                candidates = []
+                group_id = f"cand_{h_pos:08x}"
+                for i, (st, en) in enumerate(spans):
+                    is_first = (i == 0)
+                    is_last = (i == len(spans) - 1)
+                    m = {
+                        "signature": sig.header.hex() if is_first else "",
+                        "footer_signature": sig.footer.hex() if is_last else "",
+                        "detection_method": "magic_bytes_disrupted" if not is_first else "magic_bytes",
+                        "has_footer": is_last,
+                        "group_id": group_id,
+                    }
+                    candidates.append({
+                        "offset": st,
+                        "length": en - st,
+                        "type_hint": sig.type_hint,
+                        "header_flag": is_first,
+                        "footer_flag": is_last,
+                        "metadata": m,
+                    })
+                return candidates
+
+            # Contiguous candidate
             length = end_pos - h_pos
             meta["footer_signature"] = sig.footer.hex()
             meta["has_footer"] = True
-            return length, True, meta
+            return [{
+                "offset": h_pos,
+                "length": length,
+                "type_hint": sig.type_hint,
+                "header_flag": True,
+                "footer_flag": True,
+                "metadata": meta,
+            }]
 
     # Footer not found: carve as candidate fragment with bounded length
     length = min(sig.default_length, total_size - h_pos)
     meta["has_footer"] = False
-    return length, False, meta
+    return [{
+        "offset": h_pos,
+        "length": length,
+        "type_hint": sig.type_hint,
+        "header_flag": True,
+        "footer_flag": False,
+        "metadata": meta,
+    }]
+
+def _determine_fragment_boundary(
+    data: Union[bytes, mmap.mmap],
+    sig: SignatureDefinition,
+    h_pos: int,
+    total_size: int,
+) -> tuple[int, bool, Dict[str, Any]]:
+    """
+    Backward-compatible single-fragment boundary determination.
+    """
+    cands = _carve_candidates_for_header(data, sig, h_pos, total_size)
+    first = cands[0]
+    return first["length"], first["footer_flag"], first["metadata"]
 
 def carve_fragments(evidence_path: Union[str, Path]) -> List[Fragment]:
     """
@@ -141,21 +215,55 @@ def carve_fragments(evidence_path: Union[str, Path]) -> List[Fragment]:
                         if h_pos == -1:
                             break
 
-                        length, footer_flag, meta = _determine_fragment_boundary(
+                        header_cands = _carve_candidates_for_header(
                             mm, sig, h_pos, file_size
                         )
-                        
-                        candidates.append({
-                            "offset": h_pos,
-                            "length": length,
-                            "type_hint": sig.type_hint,
-                            "header_flag": True,
-                            "footer_flag": footer_flag,
-                            "metadata": meta,
-                        })
+                        candidates.extend(header_cands)
 
                         # Advance search position past header
                         search_pos = h_pos + len(sig.header)
+
+                # Scan for standalone continuation footers not covered by existing header candidates
+                for sig in SIGNATURE_REGISTRY:
+                    if sig.footer is not None:
+                        f_search = 0
+                        while f_search < file_size:
+                            f_pos = mm.find(sig.footer, f_search)
+                            if f_pos == -1:
+                                break
+                            
+                            covered = any(c["offset"] <= f_pos < (c["offset"] + c["length"]) for c in candidates)
+                            if not covered:
+                                backtrack_limit = max(0, f_pos - sig.default_length)
+                                start_cand = backtrack_limit
+                                sub_bytes = mm[backtrack_limit:f_pos]
+                                last_null_run = sub_bytes.rfind(b"\x00" * 32)
+                                if last_null_run != -1:
+                                    start_cand = backtrack_limit + last_null_run + 32
+                                    while start_cand < f_pos and mm[start_cand:start_cand + 1] == b"\x00":
+                                        start_cand += 1
+                                
+                                f_end = f_pos + len(sig.footer)
+                                if sig.type_hint == "pdf":
+                                    while f_end < file_size and mm[f_end:f_end + 1] in (b"\r", b"\n"):
+                                        f_end += 1
+                                
+                                cand_len = f_end - start_cand
+                                if cand_len >= 16:
+                                    candidates.append({
+                                        "offset": start_cand,
+                                        "length": cand_len,
+                                        "type_hint": sig.type_hint,
+                                        "header_flag": False,
+                                        "footer_flag": True,
+                                        "metadata": {
+                                            "signature": "",
+                                            "footer_signature": sig.footer.hex(),
+                                            "detection_method": "continuation_carving",
+                                            "has_footer": True,
+                                        },
+                                    })
+                            f_search = f_pos + len(sig.footer)
 
         except (OSError, ValueError):
             # Fallback to chunked scanning if mmap is unavailable
@@ -168,19 +276,52 @@ def carve_fragments(evidence_path: Union[str, Path]) -> List[Fragment]:
                     if h_pos == -1:
                         break
 
-                    length, footer_flag, meta = _determine_fragment_boundary(
+                    header_cands = _carve_candidates_for_header(
                         data, sig, h_pos, file_size
                     )
-
-                    candidates.append({
-                        "offset": h_pos,
-                        "length": length,
-                        "type_hint": sig.type_hint,
-                        "header_flag": True,
-                        "footer_flag": footer_flag,
-                        "metadata": meta,
-                    })
+                    candidates.extend(header_cands)
                     search_pos = h_pos + len(sig.header)
+
+            for sig in SIGNATURE_REGISTRY:
+                if sig.footer is not None:
+                    f_search = 0
+                    while f_search < file_size:
+                        f_pos = data.find(sig.footer, f_search)
+                        if f_pos == -1:
+                            break
+                        
+                        covered = any(c["offset"] <= f_pos < (c["offset"] + c["length"]) for c in candidates)
+                        if not covered:
+                            backtrack_limit = max(0, f_pos - sig.default_length)
+                            start_cand = backtrack_limit
+                            sub_bytes = data[backtrack_limit:f_pos]
+                            last_null_run = sub_bytes.rfind(b"\x00" * 32)
+                            if last_null_run != -1:
+                                start_cand = backtrack_limit + last_null_run + 32
+                                while start_cand < f_pos and data[start_cand:start_cand + 1] == b"\x00":
+                                    start_cand += 1
+                            
+                            f_end = f_pos + len(sig.footer)
+                            if sig.type_hint == "pdf":
+                                while f_end < file_size and data[f_end:f_end + 1] in (b"\r", b"\n"):
+                                    f_end += 1
+                            
+                            cand_len = f_end - start_cand
+                            if cand_len >= 16:
+                                candidates.append({
+                                    "offset": start_cand,
+                                    "length": cand_len,
+                                    "type_hint": sig.type_hint,
+                                    "header_flag": False,
+                                    "footer_flag": True,
+                                    "metadata": {
+                                        "signature": "",
+                                        "footer_signature": sig.footer.hex(),
+                                        "detection_method": "continuation_carving",
+                                        "has_footer": True,
+                                    },
+                                })
+                        f_search = f_pos + len(sig.footer)
 
     # Sort candidates deterministically by offset, then by length
     candidates.sort(key=lambda c: (c["offset"], c["length"], c["type_hint"]))

@@ -14,8 +14,10 @@ from recovery.clustering import cluster_fragments
 from recovery.reconstruction import reconstruct_structured_file
 from recovery.text_reconstruction import reconstruct_small_text_cluster, reconstruct_large_text_cluster
 from intelligence.scoring import score_reconstructed_file
+from recovery.recoverability import assess_recoverability
 from .pipeline_context import PipelineContext
 from .pipeline_status import PipelineStatus, PipelineStage
+
 
 def run_stage_1(
     evidence_path: str, status_callback: Optional[callable] = None
@@ -214,11 +216,50 @@ def run_stage_6(
 
     return evidence, fragments, features, graph, clusters, orphans, scored_files
 
+def run_stage_7(
+    evidence_path: str, status_callback: Optional[callable] = None
+) -> Tuple[Evidence, List[Fragment], List[FeatureVector], Dict[str, Any], List[FragmentCluster], List[str], List[ReconstructedFile]]:
+    """
+    Execute Stage 7: Stages 1-6 + Real Recoverability Assessment & Disrupted-File Reconstruction.
+    
+    Takes Stage 6 scored reconstructed candidates, performs factual recoverability
+    assessment (exact recovered bytes, missing/unknown bytes, observed candidate span,
+    observed recovery ratio, deterministic status, and machine-generated explanation),
+    writes real candidate artifacts into recovered/recovered_<candidate_id>.<ext>,
+    and computes candidate SHA-256 digests.
+    
+    Returns:
+        (evidence, fragments, features, relationship_graph, clusters, orphans, assessed_files)
+    """
+    evidence, fragments, features, graph, clusters, orphans, scored_files = run_stage_6(
+        evidence_path, status_callback=status_callback
+    )
+
+    status = PipelineStatus()
+    if status_callback:
+        status.update(PipelineStage.RECONSTRUCTION, 0.8, f"Assessing recoverability for {len(scored_files)} candidates")
+        status_callback(status)
+
+    assessed_files: List[ReconstructedFile] = []
+    for scored in scored_files:
+        assessed = assess_recoverability(scored, fragments=fragments)
+        assessed_files.append(assessed)
+
+    if status_callback:
+        status.update(
+            PipelineStage.STRUCTURAL_VALIDATION,
+            1.0,
+            f"Successfully assessed recoverability for {len(assessed_files)} candidates and generated recovered artifacts"
+        )
+        status_callback(status)
+
+    return evidence, fragments, features, graph, clusters, orphans, assessed_files
+
 def run_pipeline(evidence_path: str, status_callback: Optional[callable] = None) -> RankedResults:
     """
     Main 14-stage Pipeline Orchestrator.
     
-    Stages 7-14 are intentionally deferred; use run_stage_1 .. run_stage_6 for completed stages.
+    Stages 8-14 are intentionally deferred; use run_stage_1 .. run_stage_7 for completed stages.
     """
     context = PipelineContext(evidence_path=evidence_path)
     status = PipelineStatus()
@@ -228,6 +269,6 @@ def run_pipeline(evidence_path: str, status_callback: Optional[callable] = None)
         status_callback(status)
 
     raise NotImplementedError(
-        "Full 14-stage pipeline is deferred in Stage 6. "
-        "Use run_stage_6(evidence_path) for Stage 6 decomposed integrity scoring."
-    )
+        "Full 14-stage pipeline is deferred in Stage 7. "
+        "Use run_stage_7(evidence_path) for Stage 7 recoverability assessment & reconstruction."
+    )
