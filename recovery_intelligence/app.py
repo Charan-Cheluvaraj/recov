@@ -1,7 +1,7 @@
 ﻿import streamlit as st
 import sys
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 
 # Add project root directory to python path
 ROOT_DIR = Path(__file__).resolve().parent
@@ -12,6 +12,7 @@ from config import settings
 from models.evidence import Evidence
 from models.fragment import Fragment
 from models.feature_vector import FeatureVector
+from models.cluster import FragmentCluster
 from visualization import (
     render_overview,
     render_ranked_results,
@@ -21,7 +22,7 @@ from visualization import (
     render_narrative,
 )
 from storage import load_cached_results
-from pipeline import run_pipeline, run_stage_1, run_stage_2, run_stage_3
+from pipeline import run_pipeline, run_stage_1, run_stage_2, run_stage_3, run_stage_4
 
 st.set_page_config(
     page_title="AI-Assisted Intelligent Data Recovery",
@@ -30,7 +31,7 @@ st.set_page_config(
 )
 
 st.title("AI-Assisted Intelligent Data Recovery & Digital Evidence Reconstruction")
-st.caption("CALMSTACKS 24H HACKATHON Project | Stage 1 + Stage 2 + Stage 3: Carving, Characterization & Fragment Fingerprinting")
+st.caption("CALMSTACKS 24H HACKATHON Project | Stage 1 + Stage 2 + Stage 3 + Stage 4: Carving, Characterization, Fingerprinting & Clustering")
 
 # Ensure required directories exist
 settings.EVIDENCE_DIR.mkdir(parents=True, exist_ok=True)
@@ -45,6 +46,12 @@ if "characterized_fragments" not in st.session_state:
     st.session_state.characterized_fragments = []
 if "feature_vectors" not in st.session_state:
     st.session_state.feature_vectors = []
+if "relationship_graph" not in st.session_state:
+    st.session_state.relationship_graph = {}
+if "clusters" not in st.session_state:
+    st.session_state.clusters = []
+if "orphans" not in st.session_state:
+    st.session_state.orphans = []
 if "current_results" not in st.session_state:
     st.session_state.current_results = None
 
@@ -54,7 +61,17 @@ st.sidebar.markdown("---")
 
 view_mode = st.sidebar.radio(
     "Select Dashboard View",
-    ["Stage 1: Carving", "Stage 2: Characterization", "Stage 3: Fingerprinting", "Overview", "Ranked Results", "File Detail", "Relationship Graph", "Narrative Report"],
+    [
+        "Stage 1: Carving",
+        "Stage 2: Characterization",
+        "Stage 3: Fingerprinting",
+        "Stage 4: Relationships & Clusters",
+        "Overview",
+        "Ranked Results",
+        "File Detail",
+        "Relationship Graph",
+        "Narrative Report",
+    ],
 )
 
 st.sidebar.markdown("---")
@@ -100,7 +117,11 @@ st.sidebar.markdown("---")
 col_btn1, col_btn2 = st.sidebar.columns(2)
 run_stage1_clicked = col_btn1.button("Run Stage 1 Carve", type="primary")
 run_stage2_clicked = col_btn2.button("Run Stage 2 Characterize", type="secondary")
-run_stage3_clicked = st.sidebar.button("Run Stage 3 Fingerprint")
+
+col_btn3, col_btn4 = st.sidebar.columns(2)
+run_stage3_clicked = col_btn3.button("Run Stage 3 Fingerprint")
+run_stage4_clicked = col_btn4.button("Run Stage 4 Relationships")
+
 st.sidebar.markdown("")
 run_full_clicked = st.sidebar.button("Run Full Pipeline (Deferred)")
 
@@ -155,6 +176,24 @@ if run_stage3_clicked:
                 st.sidebar.success(f"Generated {len(features)} 64D feature vectors!")
         except Exception as e:
             st.sidebar.error(f"Stage 3 Fingerprinting Error: {e}")
+
+if run_stage4_clicked:
+    if not target_path:
+        st.sidebar.warning("Please select or upload an evidence image first.")
+    else:
+        try:
+            with st.spinner("Running Stage 4: relationship mapping and DBSCAN clustering..."):
+                evidence, characterized, features, graph, clusters, orphans = run_stage_4(target_path)
+                st.session_state.evidence_record = evidence
+                st.session_state.carved_fragments = characterized
+                st.session_state.characterized_fragments = characterized
+                st.session_state.feature_vectors = features
+                st.session_state.relationship_graph = graph
+                st.session_state.clusters = clusters
+                st.session_state.orphans = orphans
+                st.sidebar.success(f"Found {len(graph.get('edges', []))} relationships, {len(clusters)} clusters, {len(orphans)} orphans!")
+        except Exception as e:
+            st.sidebar.error(f"Stage 4 Analysis Error: {e}")
 
 if run_full_clicked:
     if not target_path:
@@ -364,6 +403,95 @@ elif view_mode == "Stage 3: Fingerprinting":
             with st.expander("View Complete 64-Dimensional Float Array"):
                 st.write(selected_fv.vector)
 
+elif view_mode == "Stage 4: Relationships & Clusters":
+    st.header("Stage 4: Relationship Analysis & DBSCAN Fragment Clustering")
+    
+    graph: Dict[str, Any] = st.session_state.relationship_graph
+    clusters: List[FragmentCluster] = st.session_state.clusters
+    orphans: List[str] = st.session_state.orphans
+
+    if not graph or not graph.get("nodes"):
+        st.info(
+            "No relationship or cluster data available yet. Select an evidence file and click "
+            "**Run Stage 4 Relationships** in the sidebar."
+        )
+    else:
+        evidence = st.session_state.evidence_record
+        if evidence:
+            st.caption(
+                f"Evidence: `{evidence.source_path}` | SHA-256: `{evidence.sha256[:16]}…` | "
+                f"{len(graph.get('nodes', []))} fragments analyzed"
+            )
+
+        col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+        col_m1.metric("Total Fragments", len(graph.get("nodes", [])))
+        col_m2.metric("Relationship Edges", len(graph.get("edges", [])))
+        col_m3.metric("DBSCAN Clusters", len(clusters))
+        col_m4.metric("Orphan Fragments", len(orphans))
+
+        st.markdown("---")
+        st.subheader("Discovered Fragment Clusters")
+
+        if not clusters:
+            st.warning("No multi-fragment clusters met the DBSCAN density threshold (eps=0.30, min_samples=2).")
+        else:
+            cluster_table = [
+                {
+                    "Cluster ID": c.cluster_id,
+                    "Members Count": len(c.member_fragment_ids),
+                    "Member IDs": ", ".join(c.member_fragment_ids),
+                    "Inferred Type": c.inferred_type.upper(),
+                    "Confidence": f"{c.confidence:.2f}",
+                    "Reason": c.reason,
+                }
+                for c in clusters
+            ]
+            st.dataframe(cluster_table, use_container_width=True)
+
+        st.markdown("---")
+        st.subheader("Weighted Relationship Edges")
+
+        edges = graph.get("edges", [])
+        if not edges:
+            st.info("No pairwise relationship edges exceeded the minimum graph edge weight threshold.")
+        else:
+            edge_table = [
+                {
+                    "Source": e["source"],
+                    "Target": e["target"],
+                    "Vector Similarity": f"{e['similarity']:.4f}",
+                    "Offset Proximity": f"{e['offset_proximity']:.4f}",
+                    "Type Compatibility": f"{e['type_match']:.2f}",
+                    "Final Edge Weight": f"{e['edge_weight']:.4f}",
+                    "Reason": e.get("reason", "-"),
+                }
+                for e in edges
+            ]
+            st.dataframe(edge_table, use_container_width=True)
+
+        st.markdown("---")
+        st.subheader("Orphan / Noise Fragments")
+
+        if not orphans:
+            st.success("All analyzed fragments were assigned to cohesive clusters!")
+        else:
+            frag_map = {f.id: f for f in st.session_state.carved_fragments}
+            orphan_table = [
+                {
+                    "Fragment ID": oid,
+                    "Type Hint": frag_map[oid].type_hint.upper() if oid in frag_map else "UNKNOWN",
+                    "Offset": f"{frag_map[oid].offset} (0x{frag_map[oid].offset:08X})" if oid in frag_map else "-",
+                    "Length": f"{frag_map[oid].length} B" if oid in frag_map else "-",
+                    "Entropy": f"{frag_map[oid].entropy:.4f}" if oid in frag_map else "-",
+                    "Characterization": frag_map[oid].metadata.get("characterization", "-").upper() if oid in frag_map else "-",
+                }
+                for oid in orphans
+            ]
+            st.dataframe(orphan_table, use_container_width=True)
+
+        st.markdown("---")
+        render_relationship_graph(graph)
+
 elif view_mode == "Overview":
     render_overview(st.session_state.current_results)
 elif view_mode == "Ranked Results":
@@ -374,7 +502,7 @@ elif view_mode == "File Detail":
     if selected_file:
         render_integrity_signals(selected_file)
 elif view_mode == "Relationship Graph":
-    graph_data = st.session_state.current_results.relationship_graph if hasattr(st.session_state.current_results, "relationship_graph") else None
+    graph_data = st.session_state.relationship_graph if st.session_state.relationship_graph else (st.session_state.current_results.relationship_graph if hasattr(st.session_state.current_results, "relationship_graph") else None)
     render_relationship_graph(graph_data)
 elif view_mode == "Narrative Report":
     narrative_data = getattr(st.session_state.current_results, "narrative", None)

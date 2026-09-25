@@ -1,12 +1,15 @@
-﻿from typing import Optional, Tuple, List
+﻿from typing import Optional, Tuple, List, Dict, Any
 from models.ranked_results import RankedResults
 from models.evidence import Evidence
 from models.fragment import Fragment
 from models.feature_vector import FeatureVector
+from models.cluster import FragmentCluster
 from recovery.evidence_hash import create_evidence_record
 from recovery.carving import carve_fragments
 from recovery.entropy import characterize_fragment
 from recovery.fingerprinting import fit_and_fingerprint
+from recovery.relationship_graph import build_relationship_graph
+from recovery.clustering import cluster_fragments
 from .pipeline_context import PipelineContext
 from .pipeline_status import PipelineStatus, PipelineStage
 
@@ -87,11 +90,41 @@ def run_stage_3(
 
     return evidence, fragments, features
 
+def run_stage_4(
+    evidence_path: str, status_callback: Optional[callable] = None
+) -> Tuple[Evidence, List[Fragment], List[FeatureVector], Dict[str, Any], List[FragmentCluster], List[str]]:
+    """
+    Execute Stage 4: Stage 1 + Stage 2 + Stage 3 + Stage 4 (Relationship Graph & DBSCAN Clustering).
+    
+    Returns:
+        (evidence, fragments, features, relationship_graph, clusters, orphans)
+    """
+    evidence, fragments, features = run_stage_3(evidence_path, status_callback=status_callback)
+
+    status = PipelineStatus()
+    if status_callback:
+        status.update(PipelineStage.RELATIONSHIP_MAPPING, 0.5, f"Constructing relationship graph for {len(fragments)} fragments")
+        status_callback(status)
+
+    graph = build_relationship_graph(fragments, features)
+
+    if status_callback:
+        status.update(PipelineStage.FRAGMENT_CLUSTERING, 0.8, f"Clustering {len(features)} feature vectors with DBSCAN")
+        status_callback(status)
+
+    clusters, orphans = cluster_fragments(features, fragments=fragments)
+
+    if status_callback:
+        status.update(PipelineStage.FRAGMENT_CLUSTERING, 1.0, f"Generated {len(clusters)} clusters and {len(orphans)} orphans")
+        status_callback(status)
+
+    return evidence, fragments, features, graph, clusters, orphans
+
 def run_pipeline(evidence_path: str, status_callback: Optional[callable] = None) -> RankedResults:
     """
     Main 14-stage Pipeline Orchestrator.
     
-    Stages 4-14 are intentionally deferred; use run_stage_1 / run_stage_2 / run_stage_3 for completed stages.
+    Stages 5-14 are intentionally deferred; use run_stage_1 / run_stage_2 / run_stage_3 / run_stage_4 for completed stages.
     """
     context = PipelineContext(evidence_path=evidence_path)
     status = PipelineStatus()
@@ -101,6 +134,6 @@ def run_pipeline(evidence_path: str, status_callback: Optional[callable] = None)
         status_callback(status)
 
     raise NotImplementedError(
-        "Full 14-stage pipeline is deferred in Stage 3. "
-        "Use run_stage_3(evidence_path) for Stage 3 evidence ingestion, carving, characterization, and fingerprinting."
+        "Full 14-stage pipeline is deferred in Stage 4. "
+        "Use run_stage_4(evidence_path) for Stage 4 relationship mapping and fragment clustering."
     )

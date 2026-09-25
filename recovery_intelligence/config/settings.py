@@ -31,6 +31,16 @@ class Settings(BaseModel):
     BINARY_SVD_COMPONENTS: int = 64
     FINGERPRINT_DIMENSION: int = 64
     
+    # Stage 4 Relationship & Clustering Settings
+    COSINE_SIMILARITY_THRESHOLD: float = 0.50
+    SIMILARITY_WEIGHT: float = 0.60
+    OFFSET_PROXIMITY_WEIGHT: float = 0.20
+    TYPE_MATCH_WEIGHT: float = 0.20
+    PROXIMITY_DECAY_SCALE: float = 65536.0
+    DBSCAN_EPS: float = 0.30
+    DBSCAN_MIN_SAMPLES: int = 2
+    MIN_GRAPH_EDGE_WEIGHT: float = 0.40
+    
     # AI Models
     EMBEDDING_MODEL_NAME: str = "sentence-transformers/all-MiniLM-L6-v2"
     LLM_PROVIDER: str = "gemini"  # "gemini" or "anthropic"

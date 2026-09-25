@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+﻿from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Optional
 from models import Fragment, FeatureVector, FragmentCluster, ReconstructedFile, Evidence, Narrative, RankedResults
 
@@ -10,6 +10,7 @@ class PipelineContext(BaseModel):
     features: List[FeatureVector] = Field(default_factory=list)
     relationship_graph: Dict[str, Any] = Field(default_factory=dict)
     clusters: List[FragmentCluster] = Field(default_factory=list)
+    orphans: List[str] = Field(default_factory=list)
     reconstructed_files: List[ReconstructedFile] = Field(default_factory=list)
     narrative: Optional[Narrative] = None
     ranked_results: Optional[RankedResults] = None
